@@ -1,0 +1,82 @@
+{
+  "JPM": {
+    "name": "JPMorgan Chase",
+    "institution_types": ["commercial_bank"],
+    "primary_products": ["mortgage_lending", "credit_cards", "commercial_lending", "payments", "wealth_management", "deposit_accounts"],
+    "primary_functions": ["bsa_aml", "capital_requirements", "fair_lending", "cybersecurity", "model_risk", "sanctions"],
+    "gics_sector": "Financials",
+    "gics_sub_industry": "Diversified Banks"
+  },
+  "BAC": {
+    "name": "Bank of America",
+    "institution_types": ["commercial_bank"],
+    "primary_products": ["mortgage_lending", "credit_cards", "commercial_lending", "deposit_accounts", "wealth_management", "payments"],
+    "primary_functions": ["bsa_aml", "capital_requirements", "fair_lending", "cybersecurity", "consumer_complaints"],
+    "gics_sector": "Financials",
+    "gics_sub_industry": "Diversified Banks"
+  },
+  "WFC": {
+    "name": "Wells Fargo",
+    "institution_types": ["commercial_bank"],
+    "primary_products": ["mortgage_lending", "credit_cards", "commercial_lending", "deposit_accounts", "small_business_lending"],
+    "primary_functions": ["bsa_aml", "fair_lending", "capital_requirements", "consumer_complaints"],
+    "gics_sector": "Financials",
+    "gics_sub_industry": "Diversified Banks"
+  },
+  "SOFI": {
+    "name": "SoFi Technologies",
+    "institution_types": ["commercial_bank"],
+    "primary_products": ["personal_lending", "student_lending", "deposit_accounts", "digital_banking"],
+    "primary_functions": ["bsa_aml", "fair_lending", "consumer_complaints", "privacy"],
+    "gics_sector": "Financials",
+    "gics_sub_industry": "Consumer Finance"
+  },
+  "GS": {
+    "name": "Goldman Sachs",
+    "institution_types": ["commercial_bank"],
+    "primary_products": ["wealth_management", "commercial_lending", "payments"],
+    "primary_functions": ["capital_requirements", "model_risk", "sanctions", "cybersecurity"],
+    "gics_sector": "Financials",
+    "gics_sub_industry": "Investment Banking & Brokerage"
+  },
+  "MS": {
+    "name": "Morgan Stanley",
+    "institution_types": ["commercial_bank"],
+    "primary_products": ["wealth_management", "commercial_lending"],
+    "primary_functions": ["capital_requirements", "model_risk", "sanctions"],
+    "gics_sector": "Financials",
+    "gics_sub_industry": "Investment Banking & Brokerage"
+  },
+  "USB": {
+    "name": "U.S. Bancorp",
+    "institution_types": ["commercial_bank"],
+    "primary_products": ["mortgage_lending", "credit_cards", "deposit_accounts", "commercial_lending", "payments"],
+    "primary_functions": ["bsa_aml", "fair_lending", "capital_requirements"],
+    "gics_sector": "Financials",
+    "gics_sub_industry": "Regional Banks"
+  },
+  "PNC": {
+    "name": "PNC Financial Services",
+    "institution_types": ["commercial_bank"],
+    "primary_products": ["mortgage_lending", "credit_cards", "deposit_accounts", "commercial_lending"],
+    "primary_functions": ["bsa_aml", "fair_lending", "capital_requirements"],
+    "gics_sector": "Financials",
+    "gics_sub_industry": "Regional Banks"
+  },
+  "TFC": {
+    "name": "Truist Financial",
+    "institution_types": ["commercial_bank"],
+    "primary_products": ["mortgage_lending", "credit_cards", "deposit_accounts", "commercial_lending"],
+    "primary_functions": ["bsa_aml", "fair_lending", "capital_requirements"],
+    "gics_sector": "Financials",
+    "gics_sub_industry": "Regional Banks"
+  },
+  "COF": {
+    "name": "Capital One",
+    "institution_types": ["commercial_bank"],
+    "primary_products": ["credit_cards", "auto_lending", "deposit_accounts", "commercial_lending"],
+    "primary_functions": ["bsa_aml", "fair_lending", "consumer_complaints", "privacy"],
+    "gics_sector": "Financials",
+    "gics_sub_industry": "Consumer Finance"
+  }
+}

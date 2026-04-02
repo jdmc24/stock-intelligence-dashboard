@@ -1,0 +1,28 @@
+# Env and secrets
+.env
+.env.*
+!.env.example
+
+# Python / backend
+backend/.venv/
+backend/**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+*.egg-info/
+dist/
+
+# Local SQLite (keep directory; ignore DB files)
+backend/data/*.db
+backend/data/*.db-*
+
+# Node / frontend
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+*.tsbuildinfo
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
