@@ -59,7 +59,7 @@ export default function Home() {
   const analyzedToastIds = useRef<Set<string>>(new Set());
 
   const title = useMemo(() => {
-    if (!transcript) return "FS Intelligence Dashboard";
+    if (!transcript) return "Stock Intelligence Dashboard";
     return `${transcript.ticker}${transcript.quarter ? ` · ${transcript.quarter}` : ""}`;
   }, [transcript]);
 

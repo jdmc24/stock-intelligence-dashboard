@@ -11,7 +11,7 @@
 
 A web application that ingests public earnings call transcripts and uses LLM analysis to surface sentiment shifts, management hedging language, forward-looking guidance, and key metric callouts. Users can track how executive tone and commitments evolve quarter over quarter for any publicly traded company.
 
-This is the second module of the FS Intelligence Platform (the first being the Regulatory Change Monitor). Both share a thesis: AI tools that help financial services professionals make sense of unstructured data.
+This is the second module of the Stock Intelligence Platform (the first being the Regulatory Change Monitor). Both share a thesis: AI tools that help financial services professionals make sense of unstructured data.
 
 ### 1.1 Why This Matters (Portfolio Framing)
 

@@ -5,7 +5,7 @@
 **Version:** 2.0
 **Status:** Pre-build
 **Build Tool:** Cursor / Claude Code
-**Relationship:** Module 1 of the FS Intelligence Platform, sharing backend infrastructure with the Earnings Call Analyzer (Module 2)
+**Relationship:** Module 1 of the Stock Intelligence Platform, sharing backend infrastructure with the Earnings Call Analyzer (Module 2)
 
 > **A note on module numbering:** The module numbers reflect the original product concept sequence, not build order. The Earnings Call Analyzer (Module 2) was built first. The Regulatory Monitor (Module 1) is being added to the same platform second. The numbering describes the product's logical architecture: regulations are the foundational data layer, earnings analysis sits on top. Build sequence is separate.
 
@@ -646,7 +646,7 @@ from regulations.router import router as reg_router
 from earnings.router import router as earnings_router
 from companies.router import router as companies_router
 
-app = FastAPI(title="FS Intelligence Platform")
+app = FastAPI(title="Stock Intelligence Platform")
 app.include_router(reg_router, prefix="/api/regulations", tags=["Regulatory Monitor"])
 app.include_router(earnings_router, prefix="/api/earnings", tags=["Earnings Analyzer"])
 app.include_router(companies_router, prefix="/api/companies", tags=["Company Profiles"])
@@ -658,7 +658,7 @@ app.include_router(companies_router, prefix="/api/companies", tags=["Company Pro
 
 ### 9.1 Unified Home (`/`)
 
-**Purpose:** Single landing page for the FS Intelligence Platform showing recent activity from both modules.
+**Purpose:** Single landing page for the Stock Intelligence Platform showing recent activity from both modules.
 
 **Layout:**
 - **Header:** Platform name, top nav with "Regulations" and "Earnings" links, search bar (routes to appropriate module based on query type)

@@ -46,7 +46,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="FS Intelligence Dashboard API",
+    title="Stock Intelligence Dashboard API",
     description="Earnings transcripts, regulatory monitoring (Federal Register), and AI analysis.",
     lifespan=lifespan,
 )

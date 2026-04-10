@@ -1,6 +1,10 @@
-# FS Intelligence Dashboard
+# Stock Intelligence Dashboard
 
-Monorepo for **FS Intelligence Dashboard**: earnings call transcripts (EarningsCall API), Federal Register regulatory monitoring, company regulatory profiles, and LLM analysis (Claude) — stored in SQLite for local development.
+Monorepo for **Stock Intelligence Dashboard**: earnings call transcripts (EarningsCall API), Federal Register regulatory monitoring, company regulatory profiles, and LLM analysis (Claude) — stored in SQLite for local development.
+
+## GitHub repository name
+
+To use the slug **`stock-intelligence-dashboard`** on GitHub: open the repo → **Settings** → **General** → **Repository name**, enter `stock-intelligence-dashboard`, and rename. Update your local remote if needed: `git remote set-url origin https://github.com/<you>/stock-intelligence-dashboard.git` (or your SSH URL). Reconnect **Railway** / **Vercel** to the renamed repo if integrations break.
 
 ## Repo layout
 

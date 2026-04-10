@@ -15,9 +15,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "FS Intelligence Dashboard",
+  title: "Stock Intelligence Dashboard",
   description:
-    "Earnings call transcripts and Federal Register regulatory monitoring with AI summaries — FS Intelligence Dashboard.",
+    "Earnings call transcripts and Federal Register regulatory monitoring with AI summaries — Stock Intelligence Dashboard.",
 };
 
 export default function RootLayout({

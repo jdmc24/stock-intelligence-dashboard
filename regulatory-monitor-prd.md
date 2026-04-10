@@ -4,7 +4,7 @@
 **Last Updated:** April 1, 2026
 **Status:** Pre-build
 **Build Tool:** Cursor / Claude Code
-**Relationship:** Module 1 of the FS Intelligence Platform, sharing backend infrastructure with the Earnings Call Analyzer (Module 2)
+**Relationship:** Module 1 of the Stock Intelligence Platform, sharing backend infrastructure with the Earnings Call Analyzer (Module 2)
 
 ---
 
@@ -526,7 +526,7 @@ from fastapi import FastAPI
 from backend.regulations.router import router as reg_router
 from backend.earnings.router import router as earnings_router
 
-app = FastAPI(title="FS Intelligence Platform")
+app = FastAPI(title="Stock Intelligence Platform")
 app.include_router(reg_router, prefix="/api/regulations", tags=["Regulatory Monitor"])
 app.include_router(earnings_router, prefix="/api/earnings", tags=["Earnings Analyzer"])
 ```

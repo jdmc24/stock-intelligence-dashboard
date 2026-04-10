@@ -21,10 +21,10 @@ export function AppNav() {
             className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-teal-500 to-emerald-700 shadow-md shadow-teal-600/25 ring-1 ring-white/25 dark:from-teal-400 dark:to-emerald-700 dark:shadow-teal-900/40"
             aria-hidden
           >
-            <span className="font-mono text-xs font-bold tracking-tight text-white">FS</span>
+            <span className="font-mono text-xs font-bold tracking-tight text-white">SI</span>
           </span>
           <span className="truncate text-sm font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
-            FS Intelligence Dashboard
+            Stock Intelligence Dashboard
           </span>
         </Link>
         <nav className="flex shrink-0 items-center gap-0.5 sm:gap-1" aria-label="Main">

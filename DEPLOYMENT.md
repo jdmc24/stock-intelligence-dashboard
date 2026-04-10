@@ -4,7 +4,7 @@ The **backend** is a long‑running FastAPI app (SQLite, optional scheduler). Th
 
 ## 1. Railway — backend
 
-1. Create a project at [railway.app](https://railway.app) and **New service** → **GitHub repo** → select `fs-intelligence-dashboard`.
+1. Create a project at [railway.app](https://railway.app) and **New service** → **GitHub repo** → select `stock-intelligence-dashboard` (or your repo’s current name).
 2. Open the service → **Settings** → **Root Directory**:
    - **Recommended:** `backend` (smaller build context; uses `backend/Dockerfile`).
    - **Also supported:** leave Root Directory empty or `/` (repository root). The repo now includes a root **`Dockerfile`** that copies `backend/` into the image, so deploys still work if Root Directory was never set.
@@ -26,7 +26,7 @@ The **backend** is a long‑running FastAPI app (SQLite, optional scheduler). Th
 
 5. **Networking** → **Generate Domain** (or attach a custom domain). Copy the public URL, e.g. `https://your-api.up.railway.app`.
 6. Smoke test: `GET https://your-api.up.railway.app/healthz` → `{"ok":true}` with no auth.  
-   `GET /docs` should load Swagger with title **FS Intelligence Dashboard API**.
+   `GET /docs` should load Swagger with title **Stock Intelligence Dashboard API**.
 
 ### SQLite persistence on Railway
 
