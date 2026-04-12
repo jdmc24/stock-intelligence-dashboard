@@ -64,8 +64,10 @@ export function GettingStartedHome() {
               </p>
               <ol className="mt-2 list-decimal space-y-1.5 pl-4 text-sm">
                 <li>
-                  <strong className="font-medium text-zinc-800 dark:text-zinc-100">Fetch</strong> a ticker/quarter below (
-                  or <span className="whitespace-nowrap">Load sample transcript</span>).
+                  <strong className="font-medium text-zinc-800 dark:text-zinc-100">Fetch</strong>
+                  {" a ticker/quarter below (or "}
+                  <span className="whitespace-nowrap">Load sample transcript</span>
+                  {")."}
                 </li>
                 <li>
                   Open the transcript → <strong className="font-medium text-zinc-800 dark:text-zinc-100">Analyze with Claude</strong>{" "}
@@ -111,10 +113,19 @@ export function GettingStartedHome() {
             </div>
           </div>
 
-          <div className="rounded-lg border border-amber-200/80 bg-amber-50/90 px-3 py-3 text-xs text-amber-950 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-100/95 sm:px-4 sm:py-3">
-            <strong className="font-medium">First time here?</strong> Use the form below in order: choose ticker &amp; quarter
-            → <span className="font-medium">Fetch from EarningsCall</span> → open the row from Recent earnings → run analysis.
-            Regulatory cards on this page fill in after the Regulations flow.
+          <div className="rounded-lg border border-amber-200/80 bg-amber-50/90 px-3 py-3 dark:border-amber-900/50 dark:bg-amber-950/40 sm:px-4 sm:py-3">
+            <p className="m-0 text-xs text-amber-950 dark:text-amber-100/95">
+              <strong className="font-medium">First time here?</strong>
+              <span>
+                {" Use the form below in order: choose ticker & quarter → "}
+              </span>
+              <span className="font-medium">Fetch from EarningsCall</span>
+              <span>
+                {
+                  " → open the row from Recent earnings → run analysis. Regulatory cards on this page fill in after the Regulations flow."
+                }
+              </span>
+            </p>
           </div>
         </div>
       </div>
