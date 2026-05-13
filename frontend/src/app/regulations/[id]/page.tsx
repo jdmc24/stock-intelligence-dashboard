@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 
+import { AgentReasoningTrace } from "@/components/regulations/AgentReasoningTrace";
 import { SeverityBadge } from "@/components/regulations/SeverityBadge";
 import { getRegulatoryDocument, type RegDocumentDetail } from "@/lib/api";
 
@@ -225,6 +226,8 @@ export default function RegulationDetailPage() {
             </ul>
           </section>
         ) : null}
+
+        {full ? <AgentReasoningTrace calls={full.tool_calls ?? []} /> : null}
 
         <section className="mt-8">
           <button

@@ -245,6 +245,13 @@ export type RegProvision = {
   cfr_reference: string | null;
 };
 
+export type RegToolCall = {
+  name: string;
+  input: Record<string, unknown>;
+  output: Record<string, unknown> | { error: string };
+  is_error: boolean;
+};
+
 export type RegDocumentDetail = RegDocumentListItem & {
   raw_text: string;
   enrichment_full?: {
@@ -260,6 +267,7 @@ export type RegDocumentDetail = RegDocumentListItem & {
     affected_functions: string[];
     institution_types: string[];
     provisions: RegProvision[];
+    tool_calls: RegToolCall[];
     model_used: string;
     prompt_version: string;
   };
