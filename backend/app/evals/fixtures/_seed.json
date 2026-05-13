@@ -1,0 +1,62 @@
+{
+  "prior_documents": [
+    {
+      "id": "seed-prior-cap-2023",
+      "document_number": "2023-CAP-PRIOR",
+      "title": "Capital Requirements for Mid-Sized Banks — 2023 Final Rule",
+      "abstract": "Final rule establishing baseline regulatory capital requirements applicable to insured depository institutions with total consolidated assets between $50 billion and $250 billion.",
+      "publication_date": "2023-11-15",
+      "document_type": "Rule",
+      "agencies": ["Federal Reserve System", "Office of the Comptroller of the Currency"],
+      "raw_text": "This 2023 rule establishes baseline regulatory capital requirements for mid-sized banking organizations with total consolidated assets between $50 billion and $250 billion. It addresses Tier 1 capital ratios, supplementary leverage requirements, and resolution planning expectations.",
+      "enrichment": {
+        "summary": "Final rule from 2023 setting Tier 1 capital, supplementary leverage, and resolution planning expectations for banks $50B-$250B.",
+        "change_type": "new_rule",
+        "severity": "high",
+        "severity_rationale": "Material capital and resolution planning requirements for a broad set of mid-sized banks.",
+        "affected_products": ["commercial_lending", "deposit_accounts"],
+        "affected_functions": ["capital_requirements", "liquidity"],
+        "institution_types": ["commercial_bank"]
+      }
+    },
+    {
+      "id": "seed-prior-cyber-2024",
+      "document_number": "2024-CYBER-PRIOR",
+      "title": "Cybersecurity Incident Notification — Banking Organizations",
+      "abstract": "Interagency rule requiring banking organizations to notify their primary federal regulator of significant computer-security incidents within 36 hours.",
+      "publication_date": "2024-06-20",
+      "document_type": "Rule",
+      "agencies": ["Federal Reserve System", "FDIC", "OCC"],
+      "raw_text": "Banking organizations must notify their primary federal regulator of a notification incident no later than 36 hours after determining a notification incident has occurred. A notification incident is a computer-security incident that has materially disrupted or degraded, or is reasonably likely to materially disrupt or degrade, banking operations.",
+      "enrichment": {
+        "summary": "Interagency requirement for banks to notify regulators within 36 hours of significant computer-security incidents that materially affect operations.",
+        "change_type": "new_rule",
+        "severity": "high",
+        "severity_rationale": "Short notification window for significant cyber incidents creates real operational and reporting burden.",
+        "affected_products": ["digital_banking", "payments"],
+        "affected_functions": ["cybersecurity", "vendor_management"],
+        "institution_types": ["commercial_bank"]
+      }
+    }
+  ],
+  "company_profiles": [
+    {
+      "ticker": "JPM",
+      "name": "JPMorgan Chase & Co.",
+      "institution_types": ["commercial_bank", "broker_dealer"],
+      "primary_products": ["commercial_lending", "deposit_accounts", "wealth_management", "credit_cards"],
+      "primary_functions": ["capital_requirements", "liquidity", "bsa_aml", "cybersecurity"],
+      "gics_sector": "Financials",
+      "gics_sub_industry": "Diversified Banks"
+    },
+    {
+      "ticker": "BAC",
+      "name": "Bank of America Corp.",
+      "institution_types": ["commercial_bank", "broker_dealer"],
+      "primary_products": ["commercial_lending", "deposit_accounts", "credit_cards", "mortgage_lending"],
+      "primary_functions": ["capital_requirements", "bsa_aml", "consumer_complaints", "fair_lending"],
+      "gics_sector": "Financials",
+      "gics_sub_industry": "Diversified Banks"
+    }
+  ]
+}

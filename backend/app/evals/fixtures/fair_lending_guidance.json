@@ -1,0 +1,21 @@
+{
+  "id": "fair-lending-guidance",
+  "notes": "CFPB guidance on AI-based mortgage underwriting. Tests: medium severity, function fair_lending, product mortgage_lending. Lower stakes than a final rule, so severity should NOT be critical.",
+  "document_number": "FR-EVAL-FAIR-2025-003",
+  "title": "Guidance on Use of Artificial Intelligence in Mortgage Underwriting",
+  "abstract": "The CFPB is issuing guidance reminding mortgage lenders that the use of artificial intelligence and machine-learning models in underwriting decisions does not exempt them from existing fair-lending obligations under the Equal Credit Opportunity Act.",
+  "publication_date": "2025-08-22",
+  "document_type": "Notice",
+  "agencies": ["Bureau of Consumer Financial Protection"],
+  "raw_text": "SUMMARY: The Consumer Financial Protection Bureau (Bureau) is issuing this guidance to remind creditors that use artificial intelligence or machine-learning models in mortgage underwriting that all such models remain subject to existing fair-lending laws, including the Equal Credit Opportunity Act (ECOA) and Regulation B.\n\nKey points:\n- Adverse action notices issued by AI-based underwriting systems must state specific, accurate reasons for the decision; generic or 'black-box' explanations are not compliant.\n- Creditors retain responsibility for monitoring AI/ML models for disparate impact across protected classes.\n- Creditors must be able to explain how each model variable contributes to the underwriting decision.\n\nThis is interpretive guidance and does not establish new requirements. It clarifies how existing fair-lending obligations apply to AI-driven mortgage underwriting.",
+  "expected": {
+    "schema_required_keys": ["summary", "severity", "affected_products", "affected_functions"],
+    "severity_in": ["low", "medium", "high"],
+    "change_type_in": ["guidance", "other"],
+    "products_any_of": ["mortgage_lending"],
+    "functions_any_of": ["fair_lending", "model_risk", "consumer_complaints"],
+    "summary_includes_any_of_ci": ["fair lending", "ecoa", "mortgage", "underwriting"],
+    "summary_min_words": 25,
+    "must_have_reflection_entry": true
+  }
+}

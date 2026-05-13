@@ -1,0 +1,22 @@
+{
+  "id": "cybersecurity-disclosure-expansion",
+  "notes": "Expansion of the 2024 cyber notification rule to non-bank financial firms. Tests: severity high/critical, functions cybersecurity, change_type amendment/new_rule, and that the model uses search_related_regulations to locate the prior cyber rule.",
+  "document_number": "FR-EVAL-CYBER-2025-002",
+  "title": "Cybersecurity Incident Notification — Expansion to Non-Bank Financial Institutions",
+  "abstract": "The agencies propose extending the existing 36-hour cybersecurity incident notification framework to broker-dealers, money services businesses, and large fintech lenders.",
+  "publication_date": "2025-10-02",
+  "document_type": "Proposed Rule",
+  "agencies": ["Securities and Exchange Commission", "Financial Crimes Enforcement Network"],
+  "raw_text": "SUMMARY: This proposed rule would extend the cybersecurity incident notification framework currently applicable to banking organizations to a broader population of financial institutions, including registered broker-dealers, money services businesses, and consumer fintech lending platforms with more than $1 billion in originations.\n\nUnder this proposal, covered institutions would be required to notify their primary federal regulator of a notification incident — a computer-security incident that has materially disrupted or degraded, or is reasonably likely to materially disrupt or degrade, customer-facing services or critical operations — no later than 36 hours after determination.\n\nCOMMENT DEADLINE: 60 days after publication.\n\nThe agencies recognize that smaller non-bank firms may face implementation challenges and have included a tiered compliance timeline. Vendor and third-party service provider incidents are explicitly within scope when they materially affect a covered institution.",
+  "expected": {
+    "schema_required_keys": ["summary", "severity", "affected_products", "affected_functions"],
+    "severity_in": ["medium", "high", "critical"],
+    "change_type_in": ["proposed_rule", "new_rule", "amendment"],
+    "functions_any_of": ["cybersecurity", "vendor_management"],
+    "institution_types_any_of": ["broker_dealer", "fintech"],
+    "summary_includes_any_of_ci": ["cyber", "incident", "notification"],
+    "summary_min_words": 25,
+    "must_call_tool": "search_related_regulations",
+    "must_have_reflection_entry": true
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "id": "bsa-aml-threshold-change",
+  "notes": "FinCEN raising the CTR threshold. Tests: function bsa_aml, change_type amendment, severity medium/high.",
+  "document_number": "FR-EVAL-BSA-2025-004",
+  "title": "Bank Secrecy Act — Currency Transaction Report Threshold Update",
+  "abstract": "FinCEN is amending the Currency Transaction Report (CTR) reporting threshold to reflect inflation since the threshold was last adjusted.",
+  "publication_date": "2025-07-10",
+  "document_type": "Rule",
+  "agencies": ["Financial Crimes Enforcement Network"],
+  "raw_text": "SUMMARY: The Financial Crimes Enforcement Network (FinCEN) is amending 31 CFR 1010.311 to raise the Currency Transaction Report (CTR) reporting threshold from transactions in excess of $10,000 to transactions in excess of $30,000, reflecting cumulative inflation since the threshold was originally set in 1972.\n\nEFFECTIVE DATE: April 1, 2026.\n\nThis amendment is expected to materially reduce reporting volume for covered financial institutions including commercial banks, credit unions, money services businesses, and casinos. However, suspicious activity report (SAR) obligations are unchanged, and institutions remain responsible for risk-based monitoring below the CTR threshold.\n\nThe rule also clarifies aggregation rules for multiple transactions by or on behalf of the same person within a single business day, which continue to apply at the new $30,000 threshold.",
+  "expected": {
+    "schema_required_keys": ["summary", "severity", "affected_products", "affected_functions"],
+    "severity_in": ["medium", "high"],
+    "change_type_in": ["amendment", "new_rule"],
+    "functions_any_of": ["bsa_aml", "kyc_cdd"],
+    "institution_types_any_of": ["commercial_bank", "credit_union"],
+    "summary_includes_any_of_ci": ["ctr", "currency transaction", "bsa", "threshold"],
+    "summary_min_words": 25,
+    "must_have_reflection_entry": true
+  }
+}

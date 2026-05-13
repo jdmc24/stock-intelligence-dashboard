@@ -1,0 +1,19 @@
+{
+  "id": "comment-period-extension",
+  "notes": "Procedural notice extending a comment period by 30 days. Tests: low severity (this is housekeeping), change_type other/proposed_rule, summary mentions the extension. Should NOT trigger tool calls since the document is self-contained.",
+  "document_number": "FR-EVAL-PROC-2025-005",
+  "title": "Extension of Comment Period — Proposed Amendments to Consumer Credit Reporting",
+  "abstract": "The Bureau is extending the public comment period on its proposed amendments to Regulation V (Fair Credit Reporting Act) by 30 days.",
+  "publication_date": "2025-09-30",
+  "document_type": "Notice",
+  "agencies": ["Bureau of Consumer Financial Protection"],
+  "raw_text": "SUMMARY: The Consumer Financial Protection Bureau (Bureau) is extending the public comment period on its proposed amendments to Regulation V, implementing the Fair Credit Reporting Act, by 30 days. The original comment period was set to close on October 15, 2025. The new comment deadline is November 14, 2025.\n\nThis extension responds to requests from industry trade associations and consumer advocacy groups for additional time to analyze the proposal's potential operational impact. No substantive changes to the proposed amendments themselves are being made by this notice.\n\nCOMMENT DEADLINE: November 14, 2025.\n\nInterested parties may submit comments through regulations.gov or by mail to the Bureau.",
+  "expected": {
+    "schema_required_keys": ["summary", "severity"],
+    "severity_in": ["low", "medium"],
+    "change_type_in": ["other", "proposed_rule", "amendment"],
+    "summary_includes_any_of_ci": ["comment", "extension", "period"],
+    "summary_min_words": 20,
+    "must_have_reflection_entry": true
+  }
+}

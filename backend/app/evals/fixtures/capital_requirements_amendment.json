@@ -1,0 +1,23 @@
+{
+  "id": "capital-requirements-amendment",
+  "notes": "Bank capital amendment that references the 2023 prior rule. Tests: severity high/critical, products commercial_lending/deposit_accounts, functions capital_requirements/liquidity, and that the model uses search_related_regulations to find the prior rule.",
+  "document_number": "FR-EVAL-CAP-2025-001",
+  "title": "Amendments to Capital Requirements for Mid-Sized Banking Organizations",
+  "abstract": "The Federal Reserve, OCC, and FDIC are amending the 2023 final rule on regulatory capital requirements for mid-sized banks. The amendment increases the minimum Tier 1 leverage ratio by 50 basis points and accelerates the compliance timeline for resolution planning submissions.",
+  "publication_date": "2025-09-15",
+  "document_type": "Rule",
+  "agencies": ["Federal Reserve System", "Office of the Comptroller of the Currency", "Federal Deposit Insurance Corporation"],
+  "raw_text": "SUMMARY: The Board, OCC, and FDIC are jointly amending the 2023 Final Rule on Capital Requirements for Mid-Sized Banking Organizations. This amendment raises the minimum Tier 1 leverage ratio applicable to insured depository institutions with total consolidated assets between $50 billion and $250 billion from 4.0 percent to 4.5 percent. The amendment also accelerates the deadline for resolution planning submissions from 36 months to 24 months following the effective date.\n\nEFFECTIVE DATE: January 1, 2026.\n\nThis amendment is intended to bolster the resilience of the mid-sized banking sector in light of recent stress in regional bank funding markets. The agencies considered the cumulative compliance burden alongside the 2024 Cybersecurity Incident Notification Rule and concluded that staggered effective dates remain appropriate.\n\nAffected institutions must update internal capital adequacy assessment processes (ICAAP), supplementary leverage ratio calculations, and resolution planning submissions. Liquidity coverage ratio expectations are unchanged but referenced for context.",
+  "expected": {
+    "schema_required_keys": ["summary", "severity", "affected_products", "affected_functions", "change_type"],
+    "severity_in": ["high", "critical"],
+    "change_type_in": ["amendment", "new_rule"],
+    "products_any_of": ["commercial_lending", "deposit_accounts"],
+    "functions_any_of": ["capital_requirements", "liquidity"],
+    "institution_types_any_of": ["commercial_bank"],
+    "summary_includes_any_of_ci": ["capital", "leverage", "tier 1"],
+    "summary_min_words": 25,
+    "must_call_tool": "search_related_regulations",
+    "must_have_reflection_entry": true
+  }
+}
