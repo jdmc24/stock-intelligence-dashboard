@@ -84,12 +84,12 @@ sequenceDiagram
     API->>DB: search prior reg_documents
     DB-->>API: matches
     API->>Claude: tool_result
-    Note over Claude,API: up to 4 tool rounds<br/>then a final no-tools nudge
+    Note over Claude,API: up to 4 tool rounds, then a final no-tools nudge
     Claude-->>API: final JSON (summary, severity, products, …)
     API->>API: normalize enums, validate schema
     API->>Claude: reflection prompt + draft
     Claude-->>API: critique + optional severity revision
-    API->>API: apply correction if valid;<br/>append self_reflection to trace
+    API->>API: apply correction if valid, append self_reflection to trace
     API->>DB: persist RegEnrichment + tool_calls_json
     API-->>User: 200 OK
 ```
