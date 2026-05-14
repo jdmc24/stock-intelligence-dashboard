@@ -1,5 +1,7 @@
 # Stock Intelligence Dashboard
 
+[![evals](https://github.com/jdmc24/stock-intelligence-dashboard/actions/workflows/evals.yml/badge.svg?branch=main)](https://github.com/jdmc24/stock-intelligence-dashboard/actions/workflows/evals.yml)
+
 Full-stack app for **public-equities research**: pull **earnings call transcripts**, monitor **Federal Register** regulatory activity, and run **LLM-backed analysis** (Anthropic Claude). Monorepo with a Next.js UI and FastAPI API; SQLite for a simple local data store.
 
 | | |
@@ -101,3 +103,18 @@ All variables are documented in [`.env.example`](./.env.example). Minimum for me
 ## Deploy
 
 **Railway** (API) + **Vercel** (frontend, root directory `frontend`): env vars, volumes, and ordering are in [`DEPLOYMENT.md`](./DEPLOYMENT.md). Viewers use the **live URLs** only; they do not need to deploy the repo.
+
+## Evals
+
+The LLM-backed regulatory enrichment path is covered by a small **fixture-based eval suite** in [`backend/app/evals/`](./backend/app/evals/). Five Federal Register documents (capital, cyber, fair-lending, BSA/AML, procedural) are scored on:
+
+- **Final-output assertions** — severity bucket, change-type enum, products/functions overlap, summary keyword presence + minimum length.
+- **Trace-level assertions** — did the agent call the right tool? did the reflection pass run?
+
+Scoring is deterministic (no LLM-as-judge), runs in an isolated SQLite database, and surfaces regressions in ~3 minutes for under $0.15. The suite runs automatically on PRs that touch the agent path; see [`.github/workflows/evals.yml`](./.github/workflows/evals.yml).
+
+```bash
+cd backend
+python -m app.evals.runner --dry     # validate fixtures + scoring without API cost
+python -m app.evals.runner            # full suite (needs ANTHROPIC_API_KEY)
+```
