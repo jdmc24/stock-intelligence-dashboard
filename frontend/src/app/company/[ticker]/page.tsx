@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 
 import { SeverityBadge } from "@/components/regulations/SeverityBadge";
 import {
+  STOCK_LINK_TYPE_LABELS,
   type CompanyRegProfile,
   type CompanyTimeline,
   getCompanyRegProfile,
@@ -191,6 +192,18 @@ export default function CompanyDashboardPage() {
                               <p className="mt-1 line-clamp-2 text-xs text-zinc-600 dark:text-zinc-400">
                                 {m.enrichment.summary}
                               </p>
+                            ) : null}
+                            {m.match_reason ? (
+                              <div className="mt-2 flex flex-wrap gap-1">
+                                {m.match_reason.link_types.map((lt) => (
+                                  <span
+                                    key={lt}
+                                    className="rounded-full bg-violet-500/12 px-2 py-0.5 text-[10px] text-violet-900 dark:text-violet-100"
+                                  >
+                                    {STOCK_LINK_TYPE_LABELS[lt] ?? lt}
+                                  </span>
+                                ))}
+                              </div>
                             ) : null}
                           </Link>
                         </li>

@@ -4,6 +4,7 @@ import asyncio
 import datetime as dt
 import json
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,135 @@ from app.services.regulations_db import ensure_reg_search_fts
 logger = logging.getLogger(__name__)
 
 _COMPANY_PROFILES_JSON = Path(__file__).resolve().parent.parent / "data" / "company_profiles.json"
+
+
+def _searchable_doc_blob(doc: RegDocument, max_chars: int = 120_000) -> str:
+    parts = [doc.title or "", doc.abstract or "", (doc.raw_text or "")[:max_chars]]
+    return " ".join(parts).lower()
+
+
+def _ticker_mentioned_in_blob(blob: str, ticker: str) -> bool:
+    """Word-boundary match; only symbols with length ≥ 3 (reduces false positives)."""
+    t = ticker.strip().upper()
+    if len(t) < 3:
+        return False
+    try:
+        return re.search(rf"\b{re.escape(t)}\b", blob, re.IGNORECASE) is not None
+    except re.error:
+        return False
+
+
+def _company_name_mentioned_in_blob(blob: str, name: str) -> bool:
+    n = " ".join(name.strip().lower().split())
+    if len(n) < 6:
+        return False
+    if n in blob:
+        return True
+    parts = n.split()
+    if len(parts) >= 2:
+        frag = " ".join(parts[:2])
+        if len(frag) >= 6 and frag in blob:
+            return True
+    return False
+
+
+def _fr_topics_product_hints(fr_topics: list[str], profile_products: set[str]) -> list[str]:
+    hints: list[str] = []
+    for topic in fr_topics:
+        tl = topic.lower()
+        for pr in profile_products:
+            needle = pr.replace("_", " ")
+            if needle in tl or pr.replace("_", "-") in tl or pr in tl:
+                hints.append(topic)
+                break
+    return hints[:8]
+
+
+def compute_stock_link(
+    doc: RegDocument,
+    enrichment: RegEnrichment | None,
+    profile: CompanyRegProfile,
+) -> dict[str, Any] | None:
+    """Structured reasons this regulation may relate to a company (tags, FR topics, text)."""
+    blob = _searchable_doc_blob(doc)
+    p_prods = set(json.loads(profile.primary_products or "[]"))
+    p_funcs = set(json.loads(profile.primary_functions or "[]"))
+    p_inst = set(json.loads(profile.institution_types or "[]"))
+
+    ov_p: list[str] = []
+    ov_f: list[str] = []
+    ov_i: list[str] = []
+    if enrichment:
+        d_prods = set(json.loads(enrichment.affected_products or "[]"))
+        d_funcs = set(json.loads(enrichment.affected_functions or "[]"))
+        d_inst = set(json.loads(enrichment.institution_types or "[]"))
+        ov_p = sorted(p_prods & d_prods)
+        ov_f = sorted(p_funcs & d_funcs)
+        ov_i = sorted(p_inst & d_inst)
+
+    ticker_hit = _ticker_mentioned_in_blob(blob, profile.ticker)
+    company_hit = _company_name_mentioned_in_blob(blob, profile.name)
+
+    try:
+        raw = json.loads(doc.fr_topics or "[]")
+        fr_topics = [str(x) for x in raw] if isinstance(raw, list) else []
+    except (json.JSONDecodeError, TypeError):
+        fr_topics = []
+    topic_hints = _fr_topics_product_hints(fr_topics, p_prods)
+
+    link_types: list[str] = []
+    if ov_p:
+        link_types.append("product_tag_overlap")
+    if ov_f:
+        link_types.append("function_tag_overlap")
+    if ov_i:
+        link_types.append("institution_type_overlap")
+    if topic_hints:
+        link_types.append("fr_topic_product_hint")
+    if ticker_hit:
+        link_types.append("ticker_mention")
+    if company_hit:
+        link_types.append("company_name_mention")
+
+    if not link_types:
+        return None
+
+    return {
+        "ticker": profile.ticker,
+        "company_name": profile.name,
+        "link_types": link_types,
+        "overlapping_products": ov_p,
+        "overlapping_functions": ov_f,
+        "overlapping_institution_types": ov_i,
+        "fr_topics_flagged": topic_hints,
+        "ticker_mentioned_in_document": ticker_hit,
+        "company_name_mentioned_in_document": company_hit,
+    }
+
+
+async def stock_links_for_document(
+    session: AsyncSession,
+    doc: RegDocument,
+    enrichment: RegEnrichment | None,
+) -> list[dict[str, Any]]:
+    res = await session.execute(select(CompanyRegProfile))
+    profiles = list(res.scalars().all())
+    links: list[dict[str, Any]] = []
+    for p in profiles:
+        row = compute_stock_link(doc, enrichment, p)
+        if row:
+            links.append(row)
+
+    def sort_key(x: dict[str, Any]) -> tuple[int, int, int, str]:
+        lt = x.get("link_types") or []
+        mention = 1 if "ticker_mention" in lt else 0
+        n_ov = len(x.get("overlapping_products") or []) + len(x.get("overlapping_functions") or [])
+        n_inst = len(x.get("overlapping_institution_types") or [])
+        return (-mention, -n_ov, -n_inst, x.get("ticker", ""))
+
+    links.sort(key=sort_key)
+    return links
+
 
 
 async def seed_company_profiles(session: AsyncSession) -> int:
@@ -490,6 +620,7 @@ async def get_document(session: AsyncSession, doc_id: str) -> dict[str, Any] | N
             "model_used": e.model_used,
             "prompt_version": e.prompt_version,
         }
+    data["stock_links"] = await stock_links_for_document(session, d, e)
     return data
 
 
@@ -566,8 +697,8 @@ async def regulations_status(session: AsyncSession) -> dict[str, Any]:
 async def _fetch_enriched_rows_since(
     session: AsyncSession,
     since: dt.date,
-) -> list[tuple[RegDocument, RegEnrichment, set[str], set[str]]]:
-    """All enriched FR documents on or after `since`, with product/function tag sets for matching."""
+) -> list[tuple[RegDocument, RegEnrichment, set[str], set[str], set[str]]]:
+    """All enriched FR documents on or after `since`, with tag sets for matching."""
     rows = (
         await session.execute(
             select(RegDocument, RegEnrichment)
@@ -576,26 +707,32 @@ async def _fetch_enriched_rows_since(
             .order_by(RegDocument.publication_date.desc())
         )
     ).all()
-    out: list[tuple[RegDocument, RegEnrichment, set[str], set[str]]] = []
+    out: list[tuple[RegDocument, RegEnrichment, set[str], set[str], set[str]]] = []
     for d, e in rows:
         ap = set(json.loads(e.affected_products or "[]"))
         af = set(json.loads(e.affected_functions or "[]"))
-        out.append((d, e, ap, af))
+        inst = set(json.loads(e.institution_types or "[]"))
+        out.append((d, e, ap, af, inst))
     return out
 
 
 def _impact_payload_for_profile(
     profile: CompanyRegProfile,
-    prepared_rows: list[tuple[RegDocument, RegEnrichment, set[str], set[str]]],
+    prepared_rows: list[tuple[RegDocument, RegEnrichment, set[str], set[str], set[str]]],
     lookback_days: int,
 ) -> dict[str, Any]:
     products = set(json.loads(profile.primary_products or "[]"))
     functions = set(json.loads(profile.primary_functions or "[]"))
+    p_inst = set(json.loads(profile.institution_types or "[]"))
     t = profile.ticker
     matched: list[dict[str, Any]] = []
-    for d, e, ap, af in prepared_rows:
-        if (ap & products) or (af & functions):
-            matched.append(_doc_to_dict(d, e))
+    for d, e, ap, af, inst_e in prepared_rows:
+        if (ap & products) or (af & functions) or (inst_e & p_inst):
+            doc_dict = _doc_to_dict(d, e)
+            mr = compute_stock_link(d, e, profile)
+            if mr:
+                doc_dict["match_reason"] = mr
+            matched.append(doc_dict)
     return {
         "ticker": t,
         "company_name": profile.name,

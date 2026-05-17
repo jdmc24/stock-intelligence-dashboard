@@ -212,6 +212,29 @@ export async function searchTranscripts(params: { company?: string; topic?: stri
 
 // ——— Regulatory Change Monitor ———
 
+/** Why a regulation is linked to a stock (detail `stock_links`, impact `match_reason`). */
+export type StockLink = {
+  ticker: string;
+  company_name: string;
+  link_types: string[];
+  overlapping_products: string[];
+  overlapping_functions: string[];
+  overlapping_institution_types: string[];
+  fr_topics_flagged: string[];
+  ticker_mentioned_in_document: boolean;
+  company_name_mentioned_in_document: boolean;
+};
+
+/** Short labels for `link_types` (API snake_case keys). */
+export const STOCK_LINK_TYPE_LABELS: Record<string, string> = {
+  product_tag_overlap: "Product tags overlap",
+  function_tag_overlap: "Function tags overlap",
+  institution_type_overlap: "Institution type overlap",
+  fr_topic_product_hint: "FR topic ↔ product",
+  ticker_mention: "Ticker in document text",
+  company_name_mention: "Company name in text",
+};
+
 export type RegEnrichmentSummary = {
   summary: string;
   change_type: string;
@@ -237,6 +260,8 @@ export type RegDocumentListItem = {
   enrichment: RegEnrichmentSummary | null;
   created_at: string | null;
   updated_at: string | null;
+  /** Present on regulatory impact responses: structured match explanation. */
+  match_reason?: StockLink;
 };
 
 export type RegProvision = {
@@ -254,6 +279,8 @@ export type RegToolCall = {
 
 export type RegDocumentDetail = RegDocumentListItem & {
   raw_text: string;
+  /** Companies whose profile or document text suggests a link. */
+  stock_links?: StockLink[];
   enrichment_full?: {
     summary: string;
     change_type: string;

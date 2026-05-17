@@ -6,7 +6,11 @@ import { useEffect, useState } from "react";
 
 import { AgentReasoningTrace } from "@/components/regulations/AgentReasoningTrace";
 import { SeverityBadge } from "@/components/regulations/SeverityBadge";
-import { getRegulatoryDocument, type RegDocumentDetail } from "@/lib/api";
+import {
+  STOCK_LINK_TYPE_LABELS,
+  getRegulatoryDocument,
+  type RegDocumentDetail,
+} from "@/lib/api";
 
 export default function RegulationDetailPage() {
   const params = useParams();
@@ -207,6 +211,78 @@ export default function RegulationDetailPage() {
                 </div>
               </div>
             ) : null}
+          </section>
+        ) : null}
+
+        {(doc.stock_links ?? []).length > 0 ? (
+          <section className="surface-card mt-6 p-5 sm:p-6">
+            <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">Related stocks</h2>
+            <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
+              Heuristic links from tag overlap, Federal Register topics, and mentions in the document text. For
+              informational use only.
+            </p>
+            <ul className="mt-4 space-y-4">
+              {(doc.stock_links ?? []).map((sl) => (
+                <li
+                  key={sl.ticker}
+                  className="rounded-xl border border-zinc-200/90 p-4 dark:border-zinc-800"
+                >
+                  <div className="flex flex-wrap items-baseline justify-between gap-2">
+                    <Link
+                      href={`/company/${sl.ticker}`}
+                      className="font-mono text-sm font-semibold text-teal-700 hover:underline dark:text-teal-400"
+                    >
+                      {sl.ticker}
+                    </Link>
+                    <span className="text-sm text-zinc-700 dark:text-zinc-300">{sl.company_name}</span>
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {sl.link_types.map((lt) => (
+                      <span
+                        key={lt}
+                        className="rounded-full bg-violet-500/12 px-2 py-0.5 text-[11px] text-violet-900 dark:text-violet-100"
+                      >
+                        {STOCK_LINK_TYPE_LABELS[lt] ?? lt}
+                      </span>
+                    ))}
+                  </div>
+                  {sl.overlapping_products.length > 0 ||
+                  sl.overlapping_functions.length > 0 ||
+                  sl.overlapping_institution_types.length > 0 ? (
+                    <div className="mt-3 text-xs text-zinc-600 dark:text-zinc-400">
+                      {sl.overlapping_products.length > 0 ? (
+                        <p>
+                          <span className="font-medium text-zinc-700 dark:text-zinc-300">Products: </span>
+                          {sl.overlapping_products.join(", ")}
+                        </p>
+                      ) : null}
+                      {sl.overlapping_functions.length > 0 ? (
+                        <p className={sl.overlapping_products.length > 0 ? "mt-1" : ""}>
+                          <span className="font-medium text-zinc-700 dark:text-zinc-300">Functions: </span>
+                          {sl.overlapping_functions.join(", ")}
+                        </p>
+                      ) : null}
+                      {sl.overlapping_institution_types.length > 0 ? (
+                        <p
+                          className={
+                            sl.overlapping_products.length > 0 || sl.overlapping_functions.length > 0 ? "mt-1" : ""
+                          }
+                        >
+                          <span className="font-medium text-zinc-700 dark:text-zinc-300">Institutions: </span>
+                          {sl.overlapping_institution_types.join(", ")}
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {sl.fr_topics_flagged.length > 0 ? (
+                    <p className="mt-2 text-xs text-zinc-500">
+                      <span className="font-medium text-zinc-600 dark:text-zinc-400">FR topics: </span>
+                      {sl.fr_topics_flagged.slice(0, 5).join(" · ")}
+                    </p>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
           </section>
         ) : null}
 
