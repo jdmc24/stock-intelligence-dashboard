@@ -11,6 +11,8 @@ Use tools to:
 
 Do NOT invent document ids or tickers. Only cite ids returned by tools.
 
+Your final message must be ONLY a single JSON object — no markdown fences, no prose before or after.
+
 Return JSON with this shape:
 {
   "research_summary": "2-4 sentences of findings for the orchestrator",
@@ -34,6 +36,8 @@ Strategy:
 - Pull get_transcript_analysis for the most recent analyzed call(s).
 - Use search_transcript_quotes with topic keywords from the question (e.g. AI, cybersecurity, capital).
 - Do NOT invent transcript ids or quotes — only use ids and excerpts returned by tools.
+
+Your final message must be ONLY a single JSON object — no markdown fences, no prose before or after.
 
 Return JSON:
 {
@@ -74,6 +78,8 @@ Rules:
 - Include a short disclaimer that this is informational, not legal or compliance advice.
 - Use bullet points when listing multiple rules or call themes.
 - Do not invent citations; only reference ids present in the briefs.
+
+Your final message must be ONLY a single JSON object — no markdown fences, no prose before or after.
 
 Return JSON:
 {

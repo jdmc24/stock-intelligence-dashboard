@@ -326,20 +326,34 @@ async def _synthesize(
     user_parts = [
         f"User question:\n{question}\n",
         f"Intent:\n{json.dumps(intent, indent=2)}\n",
-        f"Regulations research brief:\n{json.dumps(reg_brief, indent=2, default=str)}\n",
+        f"Regulations research brief:\n{json.dumps(_compact_brief(reg_brief), indent=2, default=str)}\n",
     ]
     if earn_brief:
-        user_parts.append(f"Earnings research brief:\n{json.dumps(earn_brief, indent=2, default=str)}\n")
+        user_parts.append(
+            f"Earnings research brief:\n{json.dumps(_compact_brief(earn_brief), indent=2, default=str)}\n"
+        )
     else:
         user_parts.append("Earnings research brief: not collected for this question.\n")
     user = "\n".join(user_parts)
 
-    parsed, in_t, out_t = await asyncio.to_thread(
-        complete_json_with_usage,
-        SYNTHESIS_SYSTEM,
-        user,
-        4096,
-    )
+    try:
+        parsed, in_t, out_t = await asyncio.to_thread(
+            complete_json_with_usage,
+            SYNTHESIS_SYSTEM,
+            user,
+            8192,
+        )
+    except ValueError as e:
+        if "JSON object" not in str(e):
+            raise
+        md = _fallback_markdown(question, intent, reg_brief, earn_brief)
+        citations = _citations_from_briefs(reg_brief, earn_brief)
+        limitations = list(reg_brief.get("gaps") or [])
+        if earn_brief:
+            limitations.extend(earn_brief.get("gaps") or [])
+        limitations.append("Answer synthesized from research briefs after JSON parse failure.")
+        return {"markdown": md, "citations": citations, "limitations": limitations}, 0, 0
+
     citations = (
         parsed.get("citations")
         if isinstance(parsed.get("citations"), list)
@@ -350,6 +364,28 @@ async def _synthesize(
         "citations": citations,
         "limitations": parsed.get("limitations") if isinstance(parsed.get("limitations"), list) else [],
     }, in_t, out_t
+
+
+def _compact_brief(brief: dict[str, Any]) -> dict[str, Any]:
+    """Keep synthesizer prompts bounded so the model has room for JSON output."""
+    if not brief:
+        return {}
+    compact = {
+        "research_summary": brief.get("research_summary"),
+        "tickers": brief.get("tickers"),
+        "topics": brief.get("topics"),
+        "gaps": brief.get("gaps"),
+        "narrative_themes": brief.get("narrative_themes"),
+    }
+    if brief.get("key_documents") is not None:
+        compact["key_documents"] = (brief.get("key_documents") or [])[:6]
+    if brief.get("key_transcripts") is not None:
+        compact["key_transcripts"] = (brief.get("key_transcripts") or [])[:4]
+    if brief.get("notable_quotes") is not None:
+        compact["notable_quotes"] = (brief.get("notable_quotes") or [])[:6]
+    if brief.get("timeline_point_count") is not None:
+        compact["timeline_point_count"] = brief.get("timeline_point_count")
+    return compact
 
 
 def _citations_from_briefs(reg_brief: dict[str, Any], earn_brief: dict[str, Any] | None) -> list[dict[str, Any]]:

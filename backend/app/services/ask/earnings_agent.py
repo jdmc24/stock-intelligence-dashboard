@@ -61,15 +61,24 @@ async def run_earnings_agent(
         brief = await _deterministic_brief(session, intent, emit_tool_start, emit_tool_end)
         return brief, 0, 0
 
-    parsed, _tool_log, in_t, out_t = await complete_json_with_tools_and_usage(
-        EARNINGS_AGENT_SYSTEM,
-        user,
-        ASK_EARNINGS_TOOLS,
-        execute_tool_async=tool_dispatch,
-        max_iters=5,
-        max_tokens=4096,
-    )
-    return parsed, in_t, out_t
+    try:
+        parsed, _tool_log, in_t, out_t = await complete_json_with_tools_and_usage(
+            EARNINGS_AGENT_SYSTEM,
+            user,
+            ASK_EARNINGS_TOOLS,
+            execute_tool_async=tool_dispatch,
+            max_iters=5,
+            max_tokens=4096,
+        )
+        return parsed, in_t, out_t
+    except ValueError as e:
+        if "JSON object" not in str(e):
+            raise
+        brief = await _deterministic_brief(session, intent, emit_tool_start, emit_tool_end)
+        gaps = list(brief.get("gaps") or [])
+        gaps.append("LLM earnings brief parse failed — used deterministic tool results.")
+        brief["gaps"] = gaps
+        return brief, 0, 0
 
 
 def _build_agent_user(question: str, intent: dict[str, Any]) -> str:

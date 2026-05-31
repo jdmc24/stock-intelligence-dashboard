@@ -8,6 +8,11 @@ from anthropic import Anthropic
 
 from app.settings import settings
 
+_JSON_RETRY_USER = (
+    "Your previous reply was not valid JSON. Respond with ONLY one JSON object matching the "
+    "requested schema. No markdown fences, no commentary, no text before or after the object."
+)
+
 
 def get_client() -> Anthropic:
     if not settings.anthropic_api_key:
@@ -20,26 +25,43 @@ def complete_json(system: str, user: str, max_tokens: int = 8192) -> dict:
     return data
 
 
+def _parse_model_json(text: str) -> dict:
+    from app.services.json_extract import parse_json_object
+
+    return parse_json_object(text)
+
+
 def complete_json_with_usage(system: str, user: str, max_tokens: int = 8192) -> tuple[dict, int, int]:
     """Returns (parsed_json, input_tokens, output_tokens)."""
     client = get_client()
-    msg = client.messages.create(
-        model=settings.anthropic_model,
-        max_tokens=max_tokens,
-        system=system,
-        messages=[{"role": "user", "content": user}],
-    )
-    text = ""
-    for block in msg.content:
-        if block.type == "text":
-            text += block.text
-    from app.services.json_extract import parse_json_object
+    messages: list[dict[str, Any]] = [{"role": "user", "content": user}]
+    in_total = 0
+    out_total = 0
+    last_text = ""
 
-    parsed = parse_json_object(text)
-    usage = getattr(msg, "usage", None)
-    in_t = int(getattr(usage, "input_tokens", 0) or 0) if usage else 0
-    out_t = int(getattr(usage, "output_tokens", 0) or 0) if usage else 0
-    return parsed, in_t, out_t
+    for attempt in range(2):
+        msg = client.messages.create(
+            model=settings.anthropic_model,
+            max_tokens=max_tokens,
+            system=system,
+            messages=messages,
+        )
+        usage = getattr(msg, "usage", None)
+        if usage:
+            in_total += int(getattr(usage, "input_tokens", 0) or 0)
+            out_total += int(getattr(usage, "output_tokens", 0) or 0)
+
+        last_text = "".join(block.text for block in msg.content if block.type == "text")
+        try:
+            return _parse_model_json(last_text), in_total, out_total
+        except ValueError:
+            if attempt == 0:
+                messages.append({"role": "assistant", "content": last_text or "(empty)"})
+                messages.append({"role": "user", "content": _JSON_RETRY_USER})
+                continue
+            raise
+
+    raise ValueError("No JSON object found in model output")
 
 
 ToolExecutor = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
@@ -97,8 +119,6 @@ async def complete_json_with_tools_and_usage(
     in_total = 0
     out_total = 0
 
-    from app.services.json_extract import parse_json_object
-
     for _round in range(max_iters):
         msg = await asyncio.to_thread(
             lambda: client.messages.create(
@@ -117,8 +137,13 @@ async def complete_json_with_tools_and_usage(
         tool_uses = [b for b in msg.content if getattr(b, "type", None) == "tool_use"]
 
         if not tool_uses:
-            parsed = parse_json_object(_extract_text(msg.content))
-            return parsed, tool_calls_log, in_total, out_total
+            text = _extract_text(msg.content)
+            try:
+                return _parse_model_json(text), tool_calls_log, in_total, out_total
+            except ValueError:
+                messages.append({"role": "assistant", "content": _assistant_content_to_payload(msg.content)})
+                messages.append({"role": "user", "content": _JSON_RETRY_USER})
+                continue
 
         messages.append({"role": "assistant", "content": _assistant_content_to_payload(msg.content)})
 
@@ -155,18 +180,27 @@ async def complete_json_with_tools_and_usage(
             "content": "Return the final JSON object only now. Do not call any more tools.",
         }
     )
-    final = await asyncio.to_thread(
-        lambda: client.messages.create(
-            model=model,
-            max_tokens=max_tokens,
-            system=system,
-            messages=messages,
+    for attempt in range(2):
+        final = await asyncio.to_thread(
+            lambda: client.messages.create(
+                model=model,
+                max_tokens=max_tokens,
+                system=system,
+                messages=messages,
+            )
         )
-    )
-    fusage = getattr(final, "usage", None)
-    if fusage is not None:
-        in_total += int(getattr(fusage, "input_tokens", 0) or 0)
-        out_total += int(getattr(fusage, "output_tokens", 0) or 0)
-    parsed = parse_json_object(_extract_text(final.content))
-    return parsed, tool_calls_log, in_total, out_total
+        fusage = getattr(final, "usage", None)
+        if fusage is not None:
+            in_total += int(getattr(fusage, "input_tokens", 0) or 0)
+            out_total += int(getattr(fusage, "output_tokens", 0) or 0)
+        text = _extract_text(final.content)
+        try:
+            return _parse_model_json(text), tool_calls_log, in_total, out_total
+        except ValueError:
+            if attempt == 0:
+                messages.append({"role": "assistant", "content": _assistant_content_to_payload(final.content)})
+                messages.append({"role": "user", "content": _JSON_RETRY_USER})
+                continue
+            raise
 
+    raise ValueError("No JSON object found in model output")
