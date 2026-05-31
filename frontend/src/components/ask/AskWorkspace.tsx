@@ -7,6 +7,7 @@ import {
   AskCitationList,
   OrchestratorTracePanel,
 } from "@/components/ask/OrchestratorTracePanel";
+import { AskAnswerMarkdown } from "@/components/ask/AskAnswerMarkdown";
 import {
   streamAsk,
   type AskCitation,
@@ -175,7 +176,7 @@ export function AskWorkspace({
               }`}
             >
               {m.role === "assistant" ? (
-                <div className="whitespace-pre-wrap">{m.text}</div>
+                <AskAnswerMarkdown content={m.text} />
               ) : (
                 m.text
               )}
