@@ -82,6 +82,11 @@ export default function CompanyDashboardPage() {
           {profile?.gics_sub_industry ? (
             <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">{profile.gics_sub_industry}</p>
           ) : null}
+          {profile?.is_auto_generated ? (
+            <p className="mt-2 text-xs text-amber-800/90 dark:text-amber-200/80">
+              Regulatory tags were auto-inferred for this ticker. Edit via the API or ask a refined question.
+            </p>
+          ) : null}
         </div>
 
         {loadError ? (
@@ -148,9 +153,7 @@ export default function CompanyDashboardPage() {
               </div>
               {!profile ? (
                 <p className="mt-4 text-sm text-zinc-600 dark:text-zinc-400">
-                  No regulatory product/function profile for <span className="font-mono">{ticker}</span>. Seed{" "}
-                  <code className="rounded bg-zinc-100 px-1 font-mono text-xs dark:bg-zinc-900">company_profiles</code>{" "}
-                  on the API to enable matching.
+                  Loading regulatory profile…
                 </p>
               ) : (
                 <>

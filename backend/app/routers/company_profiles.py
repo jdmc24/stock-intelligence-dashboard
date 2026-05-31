@@ -9,8 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import require_bearer_token
 from app.db import get_session
-from app.models import CompanyRegProfile
-from app.schemas import CompanyRegProfilePatch, CompanyRegProfilePut
+from app.services.company_profile_service import ensure_company_reg_profile, profile_to_dict
 
 router = APIRouter(prefix="/api/companies", tags=["company-profiles"])
 
@@ -23,16 +22,7 @@ def _normalize_ticker(ticker: str) -> str:
 
 
 def _profile_to_dict(p: CompanyRegProfile) -> dict[str, Any]:
-    return {
-        "ticker": p.ticker,
-        "name": p.name,
-        "institution_types": json.loads(p.institution_types or "[]"),
-        "primary_products": json.loads(p.primary_products or "[]"),
-        "primary_functions": json.loads(p.primary_functions or "[]"),
-        "gics_sector": p.gics_sector,
-        "gics_sub_industry": p.gics_sub_industry,
-        "is_auto_generated": p.is_auto_generated,
-    }
+    return profile_to_dict(p)
 
 
 @router.get("", dependencies=[Depends(require_bearer_token)])
@@ -44,7 +34,10 @@ async def list_company_profiles(session: AsyncSession = Depends(get_session)) ->
 
 @router.get("/{ticker}", dependencies=[Depends(require_bearer_token)])
 async def get_company_profile(ticker: str, session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
-    p = await session.get(CompanyRegProfile, _normalize_ticker(ticker))
+    t = _normalize_ticker(ticker)
+    p = await session.get(CompanyRegProfile, t)
+    if p is None:
+        p, _created = await ensure_company_reg_profile(session, t)
     if p is None:
         raise HTTPException(status_code=404, detail="Company profile not found")
     return _profile_to_dict(p)

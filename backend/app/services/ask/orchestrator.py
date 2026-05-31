@@ -10,8 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.prompts.ask_prompts import SYNTHESIS_SYSTEM
 from app.services.ask.events import AskEventEmitter
 from app.services.ask.regulations_agent import run_regulations_agent
+from app.services.company_profile_service import ensure_company_reg_profile
 from app.services.llm.anthropic_client import complete_json_with_usage
-from app.settings import settings
 
 EventCallback = Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -183,6 +183,21 @@ async def run_ask(
         )
 
     await emit(emitter.next("agent_start", agent="orchestrator", label="Planning"))
+
+    for tk in intent.get("tickers") or []:
+        profile, created = await ensure_company_reg_profile(session, str(tk), context_question=q)
+        if created and profile:
+            await emit(
+                emitter.next(
+                    "message",
+                    level="info",
+                    text=(
+                        f"Auto-created regulatory profile for {profile.ticker} ({profile.name}). "
+                        "Tags are inferred — refine on the company page if needed."
+                    ),
+                )
+            )
+
     await emit(emitter.next("agent_end", agent="orchestrator", status="ok", summary="Plan ready"))
 
     await emit(emitter.next("agent_start", agent="regulations", label="Regulations research"))

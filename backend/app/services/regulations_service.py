@@ -26,7 +26,7 @@ from app.services.federal_register import (
     fetch_raw_text,
     normalize_fr_result,
 )
-from app.services.regulations_db import ensure_reg_search_fts
+from app.services.company_profile_service import ensure_company_reg_profile
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +159,6 @@ async def stock_links_for_document(
 
     links.sort(key=sort_key)
     return links
-
 
 
 async def seed_company_profiles(session: AsyncSession) -> int:
@@ -756,6 +755,8 @@ async def impact_by_ticker(
     t = ticker.strip().upper()
     profile = await session.get(CompanyRegProfile, t)
     if profile is None:
+        profile, _created = await ensure_company_reg_profile(session, t)
+    if profile is None:
         return None
     since = dt.date.today() - dt.timedelta(days=max(lookback_days, 1))
     prepared = await _fetch_enriched_rows_since(session, since)
@@ -786,6 +787,12 @@ async def impact_by_tickers_batch(
 
     res = await session.execute(select(CompanyRegProfile).where(CompanyRegProfile.ticker.in_(ordered)))
     profiles = {p.ticker: p for p in res.scalars().all()}
+
+    for tk in ordered:
+        if tk not in profiles:
+            p, _ = await ensure_company_reg_profile(session, tk)
+            if p is not None:
+                profiles[tk] = p
 
     by_ticker: dict[str, dict[str, Any] | None] = {}
     for tk in ordered:
