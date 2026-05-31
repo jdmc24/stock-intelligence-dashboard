@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.routers.analysis import router as analysis_router
+from app.routers.ask import router as ask_router
 from app.routers.companies import router as companies_router
 from app.routers.company_profiles import router as company_profiles_router
 from app.routers.regulations import router as regulations_router
@@ -67,6 +68,7 @@ app.include_router(companies_router)
 app.include_router(search_router)
 app.include_router(regulations_router)
 app.include_router(company_profiles_router)
+app.include_router(ask_router)
 
 
 @app.get("/")

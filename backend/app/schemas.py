@@ -237,3 +237,18 @@ class CompanyRegProfilePatch(BaseModel):
             raise TypeError("primary_functions must be a list")
         return _validate_functions([str(x) for x in v])
 
+
+class AskContextIn(BaseModel):
+    ticker: str | None = Field(default=None, max_length=16)
+    regulation_id: str | None = Field(default=None, max_length=64)
+    lookback_days: int = Field(default=90, ge=1, le=365)
+
+    model_config = {"extra": "forbid"}
+
+
+class AskStreamIn(BaseModel):
+    question: str = Field(min_length=1, max_length=4000)
+    context: AskContextIn | None = None
+
+    model_config = {"extra": "forbid"}
+

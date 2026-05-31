@@ -28,7 +28,7 @@ export const API_BASE =
   process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://127.0.0.1:8000";
 const TOKEN = process.env.NEXT_PUBLIC_API_BEARER_TOKEN ?? "";
 
-function authHeaders(): HeadersInit {
+export function authHeaders(): HeadersInit {
   return TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {};
 }
 
