@@ -8,6 +8,7 @@ import {
   OrchestratorTracePanel,
 } from "@/components/ask/OrchestratorTracePanel";
 import { AskAnswerMarkdown } from "@/components/ask/AskAnswerMarkdown";
+import { AskRunProgress } from "@/components/ask/AskRunProgress";
 import {
   streamAsk,
   type AskCitation,
@@ -190,6 +191,7 @@ export function AskWorkspace({
               ) : null}
             </div>
           ))}
+          {running ? <AskRunProgress events={events} running={running} /> : null}
           {error ? <p className="text-sm text-red-700 dark:text-red-300">{error}</p> : null}
         </div>
 

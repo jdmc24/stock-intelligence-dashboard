@@ -20,6 +20,8 @@ type ToolEndEvent = AskEvent & {
   output?: unknown;
 };
 
+type AgentKey = "regulations" | "earnings";
+
 function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   return `${(ms / 1000).toFixed(1)}s`;
@@ -46,10 +48,19 @@ function stepDotClass(status: string): string {
   return "bg-zinc-300 dark:bg-zinc-600";
 }
 
-function ToolOutputPreview({ output }: { output: unknown }) {
-  if (!output || typeof output !== "object") {
-    return null;
+function groupByTool(invocations: ToolEndEvent[]): Map<string, ToolEndEvent[]> {
+  const map = new Map<string, ToolEndEvent[]>();
+  for (const e of invocations) {
+    const tool = String(e.tool ?? "unknown");
+    const list = map.get(tool) ?? [];
+    list.push(e);
+    map.set(tool, list);
   }
+  return map;
+}
+
+function ToolOutputPreview({ output }: { output: unknown }) {
+  if (!output || typeof output !== "object") return null;
   const o = output as Record<string, unknown>;
   if (typeof o.note === "string") {
     return <p className="mt-1 text-xs text-zinc-500">{o.note}</p>;
@@ -64,45 +75,7 @@ function ToolOutputPreview({ output }: { output: unknown }) {
   return null;
 }
 
-function ToolTypeChips({
-  agent,
-  calledTypes,
-}: {
-  agent: "regulations" | "earnings";
-  calledTypes: Set<string>;
-}) {
-  const tools = ASK_TOOLS_BY_AGENT[agent];
-  const usedCount = tools.filter((t) => calledTypes.has(t)).length;
-
-  return (
-    <div className="space-y-1.5">
-      <p className="text-[10px] font-medium uppercase tracking-wide text-zinc-500">
-        {ASK_AGENT_LABELS[agent]} · {usedCount}/{tools.length} tool types used
-      </p>
-      <div className="flex flex-wrap gap-1.5">
-        {tools.map((tool) => {
-          const used = calledTypes.has(tool);
-          return (
-            <span
-              key={tool}
-              title={tool}
-              className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
-                used
-                  ? "bg-violet-500/15 text-violet-900 ring-1 ring-violet-500/35 dark:bg-violet-500/20 dark:text-violet-100"
-                  : "bg-zinc-100 text-zinc-400 ring-1 ring-zinc-200/80 dark:bg-zinc-900 dark:text-zinc-600 dark:ring-zinc-800"
-              }`}
-            >
-              {used ? "✓ " : ""}
-              {ASK_TOOL_LABELS[tool] ?? tool}
-            </span>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function ToolInvocationRow({ event, index }: { event: ToolEndEvent; index: number }) {
+function ToolInvocationRow({ event }: { event: ToolEndEvent }) {
   const output = event.output;
   const emptyResult =
     output &&
@@ -111,51 +84,140 @@ function ToolInvocationRow({ event, index }: { event: ToolEndEvent; index: numbe
       ((output as Record<string, unknown>).count === 0 &&
         (output as Record<string, unknown>).found !== true));
 
-  const borderClass = event.is_error
-    ? "border-red-300/80 dark:border-red-900/60"
-    : emptyResult
-      ? "border-amber-300/60 dark:border-amber-900/50"
-      : "border-violet-400/40 dark:border-violet-700/50";
-
-  const bgClass = event.is_error
-    ? "bg-red-50/50 dark:bg-red-950/20"
-    : emptyResult
-      ? "bg-amber-50/40 dark:bg-amber-950/15"
-      : "bg-violet-500/5 dark:bg-violet-500/10";
-
   return (
-    <li className={`rounded-lg border-l-[3px] px-3 py-2 ${borderClass} ${bgClass}`}>
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-        <span className="rounded bg-zinc-900/5 px-1.5 py-0.5 font-mono text-[10px] text-zinc-600 dark:bg-white/10 dark:text-zinc-300">
-          #{index}
-        </span>
-        {event.agent ? (
-          <span className="rounded-full bg-teal-500/12 px-1.5 py-0.5 text-[10px] font-medium text-teal-900 dark:text-teal-100">
-            {ASK_AGENT_LABELS[String(event.agent)] ?? String(event.agent)}
-          </span>
-        ) : null}
-        <span className="font-medium text-zinc-800 dark:text-zinc-200">
-          {ASK_TOOL_LABELS[String(event.tool)] ?? String(event.tool)}
-        </span>
+    <li className="rounded-md border border-zinc-200/70 bg-white/50 px-2.5 py-1.5 dark:border-zinc-800 dark:bg-zinc-950/40">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px]">
         {event.is_error ? (
-          <span className="rounded bg-red-500/15 px-1.5 py-0.5 text-[10px] font-medium text-red-700 dark:text-red-300">
-            error
-          </span>
+          <span className="text-red-600 dark:text-red-400">error</span>
         ) : emptyResult ? (
-          <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 dark:text-amber-200">
-            no results
-          </span>
+          <span className="text-amber-700 dark:text-amber-300">no results</span>
         ) : (
-          <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-medium text-emerald-800 dark:text-emerald-200">
-            ran
-          </span>
+          <span className="text-emerald-700 dark:text-emerald-300">ok</span>
         )}
         {typeof event.duration_ms === "number" ? (
-          <span className="ml-auto font-mono text-[11px] text-zinc-500">{formatDuration(event.duration_ms)}</span>
+          <span className="ml-auto font-mono text-zinc-500">{formatDuration(event.duration_ms)}</span>
         ) : null}
       </div>
       <ToolOutputPreview output={event.output} />
     </li>
+  );
+}
+
+function UsedToolGroup({ tool, invocations }: { tool: string; invocations: ToolEndEvent[] }) {
+  const totalMs = invocations.reduce((s, e) => s + (e.duration_ms ?? 0), 0);
+  const label = ASK_TOOL_LABELS[tool] ?? tool;
+  const single = invocations.length === 1;
+
+  if (single) {
+    const e = invocations[0];
+    return (
+      <div className="rounded-lg border border-violet-400/30 bg-violet-500/5 px-3 py-2 dark:border-violet-700/40 dark:bg-violet-500/10">
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <span className="font-medium text-zinc-800 dark:text-zinc-200">{label}</span>
+          {typeof e.duration_ms === "number" ? (
+            <span className="ml-auto font-mono text-[11px] text-zinc-500">{formatDuration(e.duration_ms)}</span>
+          ) : null}
+        </div>
+        <ToolOutputPreview output={e.output} />
+      </div>
+    );
+  }
+
+  return (
+    <details className="group rounded-lg border border-violet-400/30 bg-violet-500/5 dark:border-violet-700/40 dark:bg-violet-500/10">
+      <summary className="cursor-pointer list-none px-3 py-2 text-xs marker:content-none [&::-webkit-details-marker]:hidden">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-medium text-zinc-800 dark:text-zinc-200">{label}</span>
+          <span className="rounded bg-violet-500/15 px-1.5 py-0.5 text-[10px] text-violet-900 dark:text-violet-100">
+            {invocations.length} calls
+          </span>
+          {totalMs > 0 ? (
+            <span className="font-mono text-[11px] text-zinc-500">{formatDuration(totalMs)} total</span>
+          ) : null}
+          <span className="ml-auto text-[10px] text-zinc-400 group-open:hidden">expand</span>
+        </div>
+      </summary>
+      <ol className="space-y-1.5 border-t border-violet-500/10 px-2 pb-2 pt-2 dark:border-violet-500/20">
+        {invocations.map((e) => (
+          <ToolInvocationRow key={`${e.seq}-${e.tool}`} event={e} />
+        ))}
+      </ol>
+    </details>
+  );
+}
+
+function AgentToolSection({
+  agent,
+  invocations,
+  running,
+  isActive,
+}: {
+  agent: AgentKey;
+  invocations: ToolEndEvent[];
+  running: boolean;
+  isActive: boolean;
+}) {
+  const allTools = ASK_TOOLS_BY_AGENT[agent];
+  const byTool = groupByTool(invocations);
+  const calledTypes = new Set(byTool.keys());
+  const unusedTools = allTools.filter((t) => !calledTypes.has(t));
+  const usedCount = calledTypes.size;
+  const totalMs = invocations.reduce((s, e) => s + (e.duration_ms ?? 0), 0);
+
+  const statusLabel = isActive && running ? "Running…" : usedCount > 0 ? "Done" : running ? "Waiting…" : "Skipped";
+
+  return (
+    <section className="rounded-lg border border-zinc-200/80 dark:border-zinc-800">
+      <div className="flex items-start justify-between gap-2 border-b border-zinc-200/80 px-3 py-2.5 dark:border-zinc-800">
+        <div>
+          <p className="text-xs font-semibold text-zinc-800 dark:text-zinc-200">{ASK_AGENT_LABELS[agent]}</p>
+          <p className="mt-0.5 text-[11px] text-zinc-500">
+            {usedCount} of {allTools.length} tools used
+            {totalMs > 0 ? <> · {formatDuration(totalMs)}</> : null}
+          </p>
+        </div>
+        <span
+          className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium ${
+            isActive && running
+              ? "bg-teal-500/15 text-teal-800 dark:text-teal-200"
+              : usedCount > 0
+                ? "bg-emerald-500/15 text-emerald-800 dark:text-emerald-200"
+                : "bg-zinc-100 text-zinc-500 dark:bg-zinc-800"
+          }`}
+        >
+          {statusLabel}
+        </span>
+      </div>
+
+      <div className="space-y-2 p-3">
+        {isActive && running && usedCount === 0 ? (
+          <p className="text-xs text-zinc-500">Starting tools…</p>
+        ) : null}
+
+        {usedCount === 0 && !running ? (
+          <p className="text-xs text-zinc-500">No tools ran in this section.</p>
+        ) : null}
+
+        {[...byTool.entries()].map(([tool, calls]) => (
+          <UsedToolGroup key={tool} tool={tool} invocations={calls} />
+        ))}
+
+        {unusedTools.length > 0 ? (
+          <details className="rounded-lg border border-dashed border-zinc-300/80 dark:border-zinc-700">
+            <summary className="cursor-pointer px-3 py-2 text-xs text-zinc-500 marker:content-none [&::-webkit-details-marker]:hidden">
+              {unusedTools.length} tool{unusedTools.length === 1 ? "" : "s"} not used — click to expand
+            </summary>
+            <ul className="space-y-1 border-t border-zinc-200/80 px-3 py-2 dark:border-zinc-800">
+              {unusedTools.map((tool) => (
+                <li key={tool} className="text-[11px] text-zinc-400 dark:text-zinc-500">
+                  {ASK_TOOL_LABELS[tool] ?? tool}
+                </li>
+              ))}
+            </ul>
+          </details>
+        ) : null}
+      </div>
+    </section>
   );
 }
 
@@ -173,59 +235,80 @@ export function OrchestratorTracePanel({
     [events],
   );
 
-  const calledTypes = useMemo(() => new Set(toolEnds.map((e) => String(e.tool ?? ""))), [toolEnds]);
-
   const totalMs = useMemo(
     () => toolEnds.reduce((sum, e) => sum + (typeof e.duration_ms === "number" ? e.duration_ms : 0), 0),
     [toolEnds],
   );
 
-  const uniqueToolCount = calledTypes.size;
-  const agentsUsed = useMemo(() => {
-    const s = new Set<string>();
-    for (const e of toolEnds) {
-      if (e.agent) s.add(String(e.agent));
-    }
-    return s;
-  }, [toolEnds]);
+  const planIncludesEarnings = (plan?.steps ?? []).some((s) => s.agent === "earnings" && s.status !== "skipped");
 
-  const toolsByAgent = useMemo(() => {
-    const groups: Record<string, ToolEndEvent[]> = { regulations: [], earnings: [] };
+  const activeAgent = useMemo(() => {
+    const starts = events.filter((e) => e.type === "agent_start");
+    const ends = new Set(events.filter((e) => e.type === "agent_end").map((e) => String(e.agent)));
+    for (let i = starts.length - 1; i >= 0; i -= 1) {
+      const a = String(starts[i].agent ?? "");
+      if (a === "regulations" || a === "earnings") {
+        if (!ends.has(a)) return a as AgentKey;
+      }
+    }
+    return null;
+  }, [events]);
+
+  const invocationsByAgent = useMemo(() => {
+    const groups: Record<AgentKey, ToolEndEvent[]> = { regulations: [], earnings: [] };
     for (const e of toolEnds) {
-      const agent = String(e.agent ?? "unknown");
-      if (!groups[agent]) groups[agent] = [];
-      groups[agent].push(e);
+      const agent = String(e.agent ?? "");
+      if (agent === "regulations" || agent === "earnings") {
+        groups[agent].push(e);
+      }
     }
     return groups;
   }, [toolEnds]);
 
-  const showRegToolChips = (toolsByAgent.regulations?.length ?? 0) > 0 || agentsUsed.has("regulations");
-  const showEarnToolChips = (toolsByAgent.earnings?.length ?? 0) > 0 || agentsUsed.has("earnings");
+  const showRegulations =
+    invocationsByAgent.regulations.length > 0 ||
+    events.some((e) => e.agent === "regulations" && (e.type === "agent_start" || e.type === "agent_end")) ||
+    (running && (plan?.steps ?? []).some((s) => s.agent === "regulations" && s.status !== "skipped"));
+
+  const showEarnings =
+    planIncludesEarnings ||
+    invocationsByAgent.earnings.length > 0 ||
+    events.some((e) => e.agent === "earnings" && (e.type === "agent_start" || e.type === "agent_end"));
 
   const resolvedSteps = (plan?.steps ?? []).map((step) => ({
     ...step,
     status: resolveStepStatus(step, events, running),
   }));
 
+  const usedToolTypes = new Set(toolEnds.map((e) => String(e.tool)));
+
   return (
     <div className="flex h-full min-h-[420px] flex-col rounded-xl border border-zinc-200/90 bg-white/60 dark:border-zinc-800 dark:bg-zinc-950/40">
       <div className="border-b border-zinc-200/80 px-4 py-3 dark:border-zinc-800">
-        <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">Orchestrator</h2>
-        <p className="mt-0.5 text-xs text-zinc-500">
-          {running ? "Working on your question…" : "Run complete"}
-        </p>
+        <div className="flex items-center gap-2">
+          {running ? (
+            <span className="relative flex h-2.5 w-2.5 shrink-0">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-teal-400/50" />
+              <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-teal-500" />
+            </span>
+          ) : null}
+          <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">Orchestrator</h2>
+        </div>
+        <p className="mt-0.5 text-xs text-zinc-500">{running ? "Live trace — updates as tools run" : "Run complete"}</p>
         {toolEnds.length > 0 ? (
           <p className="mt-2 text-xs text-zinc-600 dark:text-zinc-400">
-            <span className="font-medium text-zinc-800 dark:text-zinc-200">{toolEnds.length} executions</span>
+            <span className="font-medium text-zinc-800 dark:text-zinc-200">{usedToolTypes.size} tool types</span>
             {" · "}
-            {uniqueToolCount} tool {uniqueToolCount === 1 ? "type" : "types"}
+            {toolEnds.length} total call{toolEnds.length === 1 ? "" : "s"}
             {totalMs > 0 ? (
               <>
                 {" · "}
-                <span className="font-mono">{formatDuration(totalMs)}</span> total tool time
+                <span className="font-mono">{formatDuration(totalMs)}</span>
               </>
             ) : null}
           </p>
+        ) : running ? (
+          <p className="mt-2 text-xs text-zinc-500">Planning and fetching data…</p>
         ) : null}
       </div>
 
@@ -250,21 +333,22 @@ export function OrchestratorTracePanel({
           </section>
         ) : null}
 
-        {toolEnds.length > 0 ? (
-          <section className="space-y-3 rounded-lg border border-zinc-200/80 bg-zinc-50/50 p-3 dark:border-zinc-800 dark:bg-zinc-900/30">
-            <div>
-              <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">Tools used this run</p>
-              <p className="mt-1 text-[11px] text-zinc-500">
-                Highlighted chips were called at least once. Dim chips were not used.
-              </p>
-            </div>
-            {showRegToolChips ? (
-              <ToolTypeChips agent="regulations" calledTypes={calledTypes} />
-            ) : null}
-            {showEarnToolChips ? (
-              <ToolTypeChips agent="earnings" calledTypes={calledTypes} />
-            ) : null}
-          </section>
+        {showRegulations ? (
+          <AgentToolSection
+            agent="regulations"
+            invocations={invocationsByAgent.regulations}
+            running={running}
+            isActive={activeAgent === "regulations"}
+          />
+        ) : null}
+
+        {showEarnings ? (
+          <AgentToolSection
+            agent="earnings"
+            invocations={invocationsByAgent.earnings}
+            running={running}
+            isActive={activeAgent === "earnings"}
+          />
         ) : null}
 
         {events
@@ -282,51 +366,8 @@ export function OrchestratorTracePanel({
             </p>
           ))}
 
-        {events
-          .filter((e) => e.type === "agent_start" || e.type === "agent_end")
-          .map((e) => (
-            <div key={`agent-${e.seq}`} className="text-xs">
-              {e.type === "agent_start" ? (
-                <p className="font-medium text-teal-800 dark:text-teal-300">
-                  → {ASK_AGENT_LABELS[String(e.agent)] ?? String(e.agent)}
-                  {e.label ? `: ${String(e.label)}` : ""}
-                </p>
-              ) : (
-                <p className="text-zinc-500">
-                  ✓ {ASK_AGENT_LABELS[String(e.agent)] ?? String(e.agent)} finished
-                </p>
-              )}
-            </div>
-          ))}
-
-        {toolEnds.length > 0 ? (
-          <section>
-            <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">Execution log</p>
-            <p className="mt-1 text-[11px] text-zinc-500">
-              Each row is one tool call, in order. Duration is wall-clock time for that call.
-            </p>
-            <ol className="mt-3 space-y-2">
-              {toolEnds.map((e, i) => {
-                const agent = String(e.agent ?? "");
-                const prevAgent = i > 0 ? String(toolEnds[i - 1].agent ?? "") : "";
-                const showAgentHeader = agent && agent !== prevAgent;
-                return (
-                  <li key={`tool-wrap-${e.seq}`} className="list-none">
-                    {showAgentHeader ? (
-                      <p className="mb-2 mt-1 text-[11px] font-semibold text-zinc-700 first:mt-0 dark:text-zinc-300">
-                        {ASK_AGENT_LABELS[agent] ?? agent}
-                      </p>
-                    ) : null}
-                    <ToolInvocationRow event={e} index={i + 1} />
-                  </li>
-                );
-              })}
-            </ol>
-          </section>
-        ) : null}
-
         {toolEnds.length === 0 && running ? (
-          <p className="text-xs text-zinc-500">Waiting for first tool call…</p>
+          <p className="text-xs text-zinc-500">Tools will appear here as each specialist runs.</p>
         ) : null}
 
         {events
