@@ -50,13 +50,14 @@ def candidate_quarters(back: int = 10) -> list[QuarterSpec]:
 async def fetch_transcript(
     ticker: str,
     quarter_label: str | None = None,
-) -> tuple[str, str | None, str | None, list[dict] | None]:
+) -> tuple[str, str | None, str | None, list[dict] | None, str | None]:
     """
     Returns:
     - raw_text: full transcript string
     - company_name: if available
     - source_url: if available
     - speaker_segments: list of {speaker, title?, text, is_qa?} if available
+    - resolved_quarter: label like Q3-2025 when found
     """
     try:
         from earningscall import get_company  # type: ignore
@@ -109,7 +110,7 @@ async def fetch_transcript(
                         }
                     )
 
-            return raw_text, company_name, source_url, speaker_segments
+            return raw_text, company_name, source_url, speaker_segments, f"Q{s.quarter}-{s.year}"
         except Exception as e:
             last_err = e
             continue

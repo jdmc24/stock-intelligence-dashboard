@@ -11,6 +11,7 @@ from app.db import engine, get_session, session_context
 from app.models import Base, Transcript, TranscriptSection
 from app.schemas import TranscriptFetchIn, TranscriptFetchOut, TranscriptOut, TranscriptUploadIn
 from app.services.earningscall_client import EarningsCallError, fetch_transcript as earningscall_fetch_transcript
+from app.services.transcript_fetch_service import apply_fetch_result
 from app.services.transcript_parser import parse_sections
 
 router = APIRouter(prefix="/api/earnings/transcripts", tags=["transcripts"])
@@ -60,48 +61,23 @@ async def _background_fetch_and_parse(transcript_id: str) -> None:
         await session.commit()
 
     try:
-        text, company_name, source_url, speaker_segments = await earningscall_fetch_transcript(
+        text, company_name, source_url, speaker_segments, resolved_quarter = await earningscall_fetch_transcript(
             ticker=t.ticker, quarter_label=t.quarter
         )
-
-        if speaker_segments:
-            sections = []
-            for i, seg in enumerate(speaker_segments):
-                sec_type = "qa" if seg.get("is_qa") else "prepared_remarks"
-                sections.append(
-                    {
-                        "section_type": sec_type,
-                        "speaker": seg.get("speaker"),
-                        "text": seg.get("text") or "",
-                        "order": i,
-                    }
-                )
-        else:
-            sections = parse_sections(text)
 
         async with session_context() as session:
             t2 = await session.get(Transcript, transcript_id)
             if t2 is None:
                 return
-            t2.raw_text = text
-            t2.source_url = source_url
-            if company_name and not t2.company_name:
-                t2.company_name = company_name
-            t2.status = "raw"
-            t2.processed_at = dt.datetime.now(dt.UTC)
-
-            await session.execute(delete(TranscriptSection).where(TranscriptSection.transcript_id == transcript_id))
-            for s in sections:
-                session.add(
-                    TranscriptSection(
-                        transcript_id=transcript_id,
-                        section_type=s["section_type"],
-                        speaker=s["speaker"],
-                        text=s["text"],
-                        order=s["order"],
-                    )
-                )
-
+            await apply_fetch_result(
+                session,
+                t2,
+                text=text,
+                company_name=company_name,
+                source_url=source_url,
+                speaker_segments=speaker_segments,
+                quarter_label=resolved_quarter,
+            )
             await session.commit()
     except Exception as e:
         async with session_context() as session:

@@ -12,6 +12,7 @@ from app.services.ask.earnings_agent import run_earnings_agent
 from app.services.ask.events import AskEventEmitter
 from app.services.ask.regulations_agent import run_regulations_agent
 from app.services.company_profile_service import ensure_company_reg_profile
+from app.services.transcript_fetch_service import ensure_transcripts_for_ticker
 from app.services.llm.anthropic_client import complete_json_with_usage
 from app.services.regulations_service import get_document
 from app.settings import settings
@@ -226,6 +227,18 @@ async def run_ask(
                     ),
                 )
             )
+
+    if run_earnings:
+        for tk in intent.get("tickers") or []:
+            _transcripts, fetch_notes = await ensure_transcripts_for_ticker(
+                session,
+                str(tk),
+                min_count=1,
+                run_analysis=True,
+            )
+            for note in fetch_notes:
+                level = "warn" if note.startswith("Could not fetch") else "info"
+                await emit(emitter.next("message", level=level, text=note))
 
     await emit(emitter.next("agent_end", agent="orchestrator", status="ok", summary="Plan ready"))
 
