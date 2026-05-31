@@ -11,7 +11,7 @@ from app.services.llm.regulatory_tools import (
     _lookup_company_profile,
     _search_related_regulations,
 )
-from app.services.regulations_service import impact_by_ticker, list_documents
+from app.services.regulations_service import get_document, impact_by_ticker, list_documents
 
 # Phase 2 will add earnings tools here (search_transcripts, get_analysis, …).
 
@@ -58,6 +58,20 @@ ASK_REG_TOOLS: list[dict[str, Any]] = [
             "required": ["search"],
         },
     },
+    {
+        "name": "get_regulation",
+        "description": (
+            "Load one Federal Register document by internal id (uuid). "
+            "Use when the user opened Ask from a regulation detail page or asks about a specific rule."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "document_id": {"type": "string", "description": "RegDocument.id uuid from the database."},
+            },
+            "required": ["document_id"],
+        },
+    },
 ]
 
 
@@ -93,6 +107,32 @@ async def _impact_by_ticker_tool(
         "lookback_days": data.get("lookback_days"),
         "match_count": len(matches),
         "matches": matches,
+    }
+
+
+async def _get_regulation_tool(session: AsyncSession, document_id: str) -> dict[str, Any]:
+    doc_id = (document_id or "").strip()
+    if not doc_id:
+        return {"found": False, "note": "empty document_id"}
+    doc = await get_document(session, doc_id)
+    if doc is None:
+        return {"found": False, "document_id": doc_id}
+    enrichment = doc.get("enrichment_full") or doc.get("enrichment") or {}
+    stock_links = doc.get("stock_links") or []
+    return {
+        "found": True,
+        "id": doc.get("id"),
+        "document_number": doc.get("document_number"),
+        "title": (doc.get("title") or "")[:300],
+        "publication_date": doc.get("publication_date"),
+        "agencies": doc.get("agencies"),
+        "topics": doc.get("topics"),
+        "status": doc.get("status"),
+        "summary": (enrichment.get("summary") or doc.get("abstract") or "")[:800],
+        "severity": enrichment.get("severity"),
+        "affected_products": enrichment.get("affected_products") or [],
+        "affected_functions": enrichment.get("affected_functions") or [],
+        "stock_link_tickers": [sl.get("ticker") for sl in stock_links if sl.get("ticker")][:8],
     }
 
 
@@ -139,6 +179,8 @@ async def execute_ask_reg_tool(session: AsyncSession, name: str, arguments: dict
             search=str(args.get("search") or ""),
             limit=int(args.get("limit") or 5),
         )
+    if name == "get_regulation":
+        return await _get_regulation_tool(session, document_id=str(args.get("document_id") or ""))
     return {"error": f"unknown tool: {name}"}
 
 
@@ -147,6 +189,7 @@ TOOL_LABELS: dict[str, str] = {
     "search_related_regulations": "Searched related regulations",
     "impact_by_ticker": "Matched regulations to ticker profile",
     "list_regulations": "Searched regulation catalog",
+    "get_regulation": "Opened regulation document",
 }
 
 

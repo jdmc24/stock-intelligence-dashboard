@@ -40,6 +40,7 @@ export const ASK_TOOL_LABELS: Record<string, string> = {
   search_related_regulations: "Searched related regulations",
   impact_by_ticker: "Matched rules to company profile",
   list_regulations: "Searched regulation catalog",
+  get_regulation: "Opened regulation document",
 };
 
 export const ASK_AGENT_LABELS: Record<string, string> = {
@@ -105,4 +106,50 @@ export async function streamAsk(
     const ev = parseSseBlock(buffer);
     if (ev) onEvent(ev);
   }
+}
+
+export function defaultCompanyAskQuestion(ticker: string): string {
+  const t = ticker.trim().toUpperCase();
+  return `What recent regulations might affect ${t}, and why?`;
+}
+
+export function defaultRegulationAskQuestion(documentNumber?: string): string {
+  if (documentNumber?.trim()) {
+    return `Who might Federal Register document ${documentNumber.trim()} affect, and what are the main compliance themes?`;
+  }
+  return "Who might this Federal Register rule affect, and what are the main compliance themes?";
+}
+
+/** Build home URL with Ask context query params. */
+export function buildAskHref(params: {
+  ticker?: string;
+  regulation_id?: string;
+  q?: string;
+  auto?: boolean;
+}): string {
+  const sp = new URLSearchParams();
+  if (params.ticker?.trim()) sp.set("ticker", params.ticker.trim().toUpperCase());
+  if (params.regulation_id?.trim()) sp.set("regulation_id", params.regulation_id.trim());
+  if (params.q?.trim()) sp.set("q", params.q.trim());
+  if (params.auto) sp.set("auto", "1");
+  const qs = sp.toString();
+  return qs ? `/?${qs}` : "/";
+}
+
+export function parseAskSearchParams(searchParams: URLSearchParams): {
+  context: AskContext;
+  initialQuestion: string;
+  autoRun: boolean;
+} {
+  const ticker = searchParams.get("ticker")?.trim().toUpperCase() || undefined;
+  const regulation_id = searchParams.get("regulation_id")?.trim() || undefined;
+  const q = searchParams.get("q")?.trim() || "";
+  const context: AskContext = {};
+  if (ticker) context.ticker = ticker;
+  if (regulation_id) context.regulation_id = regulation_id;
+  return {
+    context,
+    initialQuestion: q,
+    autoRun: searchParams.get("auto") === "1",
+  };
 }

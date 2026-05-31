@@ -76,10 +76,17 @@ async def run_regulations_agent(
 
 
 def _build_agent_user(question: str, intent: dict[str, Any], lookback_days: int) -> str:
+    extra = ""
+    if intent.get("regulation_id"):
+        extra = (
+            f"\nThe user navigated from regulation id {intent['regulation_id']}. "
+            "Call get_regulation with that document_id first.\n"
+        )
     return (
         f"User question:\n{question.strip()}\n\n"
         f"Parsed intent (orchestrator):\n{json.dumps(intent, indent=2)}\n\n"
         f"Default lookback_days for impact_by_ticker: {lookback_days}\n"
+        f"{extra}"
     )
 
 
@@ -101,7 +108,29 @@ async def _deterministic_brief(
     """No API key: run obvious tools without an LLM research step."""
     tickers = intent.get("tickers") or []
     topics = intent.get("topics") or []
+    reg_id = intent.get("regulation_id")
     key_documents: list[dict[str, Any]] = []
+
+    if reg_id:
+        focused = await run_tool_with_events(
+            session,
+            "get_regulation",
+            {"document_id": str(reg_id)},
+            emit_tool_start,
+            emit_tool_end,
+        )
+        if focused.get("found"):
+            key_documents.append(
+                {
+                    "id": focused.get("id"),
+                    "document_number": focused.get("document_number"),
+                    "title": focused.get("title"),
+                    "why_relevant": "User opened Ask from this regulation",
+                }
+            )
+            for tk in focused.get("stock_link_tickers") or []:
+                if tk and tk not in tickers:
+                    tickers = [*tickers, str(tk).upper()]
 
     if tickers:
         t = str(tickers[0]).upper()

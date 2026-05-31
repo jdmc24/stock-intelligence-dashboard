@@ -6,6 +6,10 @@ import { useEffect, useState } from "react";
 
 import { SeverityBadge } from "@/components/regulations/SeverityBadge";
 import {
+  buildAskHref,
+  defaultCompanyAskQuestion,
+} from "@/lib/ask";
+import {
   STOCK_LINK_TYPE_LABELS,
   type CompanyRegProfile,
   type CompanyTimeline,
@@ -68,10 +72,11 @@ export default function CompanyDashboardPage() {
     <div className="page-canvas">
       <main className="mx-auto max-w-5xl px-6 py-10">
         <Link href="/" className="text-sm font-medium text-teal-600 hover:underline dark:text-teal-400">
-          ← Home
+          ← Ask
         </Link>
 
-        <div className="mt-6">
+        <div className="mt-6 flex flex-wrap items-start justify-between gap-4">
+          <div>
           <p className="text-xs font-medium uppercase tracking-widest text-teal-700 dark:text-teal-400/90">
             Company dashboard
           </p>
@@ -87,6 +92,17 @@ export default function CompanyDashboardPage() {
               Regulatory tags were auto-inferred for this ticker. Edit via the API or ask a refined question.
             </p>
           ) : null}
+          </div>
+          <Link
+            href={buildAskHref({
+              ticker,
+              q: defaultCompanyAskQuestion(ticker),
+              auto: true,
+            })}
+            className="btn-primary inline-flex shrink-0 text-sm"
+          >
+            Ask about {ticker}
+          </Link>
         </div>
 
         {loadError ? (

@@ -11,6 +11,10 @@ import {
   getRegulatoryDocument,
   type RegDocumentDetail,
 } from "@/lib/api";
+import {
+  buildAskHref,
+  defaultRegulationAskQuestion,
+} from "@/lib/ask";
 
 export default function RegulationDetailPage() {
   const params = useParams();
@@ -88,11 +92,21 @@ export default function RegulationDetailPage() {
             {doc.title}
           </h1>
           <div className="mt-4 flex flex-wrap gap-3">
+            <Link
+              href={buildAskHref({
+                regulation_id: doc.id,
+                q: defaultRegulationAskQuestion(doc.document_number),
+                auto: true,
+              })}
+              className="btn-primary inline-flex text-sm"
+            >
+              Ask about this rule
+            </Link>
             <a
               href={doc.federal_register_url}
               target="_blank"
               rel="noreferrer"
-              className="btn-primary inline-flex text-sm"
+              className="btn-secondary inline-flex text-sm"
             >
               Open on Federal Register
             </a>
@@ -234,7 +248,20 @@ export default function RegulationDetailPage() {
                     >
                       {sl.ticker}
                     </Link>
-                    <span className="text-sm text-zinc-700 dark:text-zinc-300">{sl.company_name}</span>
+                    <div className="flex items-center gap-3">
+                      <Link
+                        href={buildAskHref({
+                          ticker: sl.ticker,
+                          regulation_id: doc.id,
+                          q: `How might ${doc.document_number} affect ${sl.ticker}?`,
+                          auto: true,
+                        })}
+                        className="text-xs font-medium text-teal-600 hover:underline dark:text-teal-400"
+                      >
+                        Ask
+                      </Link>
+                      <span className="text-sm text-zinc-700 dark:text-zinc-300">{sl.company_name}</span>
+                    </div>
                   </div>
                   <div className="mt-2 flex flex-wrap gap-1.5">
                     {sl.link_types.map((lt) => (

@@ -12,6 +12,7 @@ from app.services.ask.events import AskEventEmitter
 from app.services.ask.regulations_agent import run_regulations_agent
 from app.services.company_profile_service import ensure_company_reg_profile
 from app.services.llm.anthropic_client import complete_json_with_usage
+from app.services.regulations_service import get_document
 
 EventCallback = Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -167,6 +168,22 @@ async def run_ask(
     )
 
     intent = parse_intent(q, context)
+    if intent.get("regulation_id"):
+        doc = await get_document(session, str(intent["regulation_id"]))
+        if doc:
+            await emit(
+                emitter.next(
+                    "message",
+                    level="info",
+                    text=f"Focused on regulation {doc.get('document_number') or doc.get('id')}.",
+                )
+            )
+            tickers = list(intent.get("tickers") or [])
+            for sl in doc.get("stock_links") or []:
+                tk = str(sl.get("ticker") or "").strip().upper()
+                if tk and tk not in tickers:
+                    tickers.append(tk)
+            intent["tickers"] = tickers[:5]
     plan = build_plan(intent)
     await emit(emitter.next("plan", **plan))
 

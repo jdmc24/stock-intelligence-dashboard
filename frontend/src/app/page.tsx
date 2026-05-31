@@ -1,6 +1,9 @@
 "use client";
 
+import { Suspense } from "react";
+
 import { AskWorkspace } from "@/components/ask/AskWorkspace";
+import { AskHomeFromUrl } from "@/components/home/AskHomeFromUrl";
 import { RecentActivity } from "@/components/home/RecentActivity";
 
 export default function HomePage() {
@@ -25,7 +28,9 @@ export default function HomePage() {
         </div>
 
         <div className="mt-8">
-          <AskWorkspace />
+          <Suspense fallback={<AskWorkspace />}>
+            <AskHomeFromUrl />
+          </Suspense>
         </div>
 
         <RecentActivity />

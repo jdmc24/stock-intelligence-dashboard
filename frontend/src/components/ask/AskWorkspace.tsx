@@ -1,13 +1,18 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   AskCitationList,
   OrchestratorTracePanel,
 } from "@/components/ask/OrchestratorTracePanel";
-import { streamAsk, type AskCitation, type AskEvent } from "@/lib/ask";
+import {
+  streamAsk,
+  type AskCitation,
+  type AskContext,
+  type AskEvent,
+} from "@/lib/ask";
 
 export const ASK_EXAMPLE_PROMPTS = [
   "What recent SEC rules might affect how MSFT discusses AI?",
@@ -24,67 +29,104 @@ type ChatMessage = {
 };
 
 type AskWorkspaceProps = {
-  /** Pre-fill the input (e.g. from URL or regulation page). */
   initialQuestion?: string;
+  context?: AskContext;
   showExamples?: boolean;
+  autoRun?: boolean;
 };
 
-export function AskWorkspace({ initialQuestion = "", showExamples = true }: AskWorkspaceProps) {
+function ContextBanner({ context }: { context: AskContext }) {
+  const parts: string[] = [];
+  if (context.ticker) parts.push(`Company: ${context.ticker}`);
+  if (context.regulation_id) parts.push(`Regulation id: ${context.regulation_id.slice(0, 8)}…`);
+  if (!parts.length) return null;
+  return (
+    <div className="mb-4 rounded-lg border border-teal-500/25 bg-teal-500/10 px-3 py-2 text-xs text-teal-900 dark:text-teal-100">
+      <span className="font-medium">Context: </span>
+      {parts.join(" · ")}
+      <Link href="/" className="ml-2 text-teal-700 underline dark:text-teal-300">
+        Clear
+      </Link>
+    </div>
+  );
+}
+
+export function AskWorkspace({
+  initialQuestion = "",
+  context,
+  showExamples = true,
+  autoRun = false,
+}: AskWorkspaceProps) {
   const [question, setQuestion] = useState(initialQuestion);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [events, setEvents] = useState<AskEvent[]>([]);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const autoRanRef = useRef(false);
 
-  const runQuestion = useCallback(async (q: string) => {
-    const trimmed = q.trim();
-    if (!trimmed || running) return;
+  useEffect(() => {
+    setQuestion(initialQuestion);
+    autoRanRef.current = false;
+  }, [initialQuestion, context?.ticker, context?.regulation_id]);
 
-    setError(null);
-    setRunning(true);
-    setEvents([]);
-    setMessages((prev) => [...prev, { id: `u-${Date.now()}`, role: "user", text: trimmed }]);
-    setQuestion("");
+  const runQuestion = useCallback(
+    async (q: string) => {
+      const trimmed = q.trim();
+      if (!trimmed || running) return;
 
-    const controller = new AbortController();
-    abortRef.current = controller;
+      setError(null);
+      setRunning(true);
+      setEvents([]);
+      setMessages((prev) => [...prev, { id: `u-${Date.now()}`, role: "user", text: trimmed }]);
+      setQuestion("");
 
-    try {
-      await streamAsk(
-        trimmed,
-        undefined,
-        (ev) => {
-          setEvents((prev) => [...prev, ev]);
-          if (ev.type === "answer") {
-            const citations = (ev.citations as AskCitation[] | undefined) ?? [];
-            const limitations = (ev.limitations as string[] | undefined) ?? [];
-            setMessages((prev) => [
-              ...prev,
-              {
-                id: `a-${ev.run_id}-${ev.seq}`,
-                role: "assistant",
-                text: String(ev.markdown ?? ""),
-                citations,
-                limitations,
-              },
-            ]);
-          }
-          if (ev.type === "error") {
-            setError(String(ev.message ?? "Something went wrong"));
-          }
-        },
-        controller.signal,
-      );
-    } catch (err) {
-      if ((err as Error).name !== "AbortError") {
-        setError(err instanceof Error ? err.message : "Request failed");
+      const controller = new AbortController();
+      abortRef.current = controller;
+
+      try {
+        await streamAsk(
+          trimmed,
+          context,
+          (ev) => {
+            setEvents((prev) => [...prev, ev]);
+            if (ev.type === "answer") {
+              const citations = (ev.citations as AskCitation[] | undefined) ?? [];
+              const limitations = (ev.limitations as string[] | undefined) ?? [];
+              setMessages((prev) => [
+                ...prev,
+                {
+                  id: `a-${ev.run_id}-${ev.seq}`,
+                  role: "assistant",
+                  text: String(ev.markdown ?? ""),
+                  citations,
+                  limitations,
+                },
+              ]);
+            }
+            if (ev.type === "error") {
+              setError(String(ev.message ?? "Something went wrong"));
+            }
+          },
+          controller.signal,
+        );
+      } catch (err) {
+        if ((err as Error).name !== "AbortError") {
+          setError(err instanceof Error ? err.message : "Request failed");
+        }
+      } finally {
+        setRunning(false);
+        abortRef.current = null;
       }
-    } finally {
-      setRunning(false);
-      abortRef.current = null;
-    }
-  }, [running]);
+    },
+    [running, context],
+  );
+
+  useEffect(() => {
+    if (!autoRun || autoRanRef.current || !initialQuestion.trim()) return;
+    autoRanRef.current = true;
+    void runQuestion(initialQuestion);
+  }, [autoRun, initialQuestion, runQuestion]);
 
   const onSubmit = useCallback(
     async (e: React.FormEvent) => {
@@ -94,11 +136,18 @@ export function AskWorkspace({ initialQuestion = "", showExamples = true }: AskW
     [question, runQuestion],
   );
 
+  const hideExamples = !showExamples || Boolean(context?.ticker || context?.regulation_id);
+
   return (
     <div className="grid min-h-[min(72vh,640px)] gap-6 lg:grid-cols-2 lg:gap-8">
       <section className="flex min-h-[420px] flex-col rounded-xl border border-zinc-200/90 bg-white/60 dark:border-zinc-800 dark:bg-zinc-950/30">
+        {context && (context.ticker || context.regulation_id) ? (
+          <div className="border-b border-zinc-200/80 px-4 pt-4 dark:border-zinc-800">
+            <ContextBanner context={context} />
+          </div>
+        ) : null}
         <div className="flex-1 space-y-4 overflow-y-auto p-4 sm:p-5">
-          {messages.length === 0 && showExamples ? (
+          {messages.length === 0 && !hideExamples ? (
             <div className="space-y-3">
               <p className="text-sm text-zinc-500">Try an example:</p>
               <div className="flex flex-col gap-2">
