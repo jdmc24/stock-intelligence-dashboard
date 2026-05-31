@@ -18,7 +18,7 @@ export const metadata: Metadata = {
   metadataBase: new URL("https://stock-intelligence.io"),
   title: "Stock Intelligence Dashboard",
   description:
-    "Earnings call transcripts and Federal Register regulatory monitoring with AI summaries — Stock Intelligence Dashboard.",
+    "Ask questions about earnings and Federal Register regulation — AI orchestration with live research trace.",
 };
 
 export default function RootLayout({
