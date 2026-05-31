@@ -18,8 +18,7 @@ router = APIRouter(prefix="/api/ask", tags=["ask"])
 async def ask_stream(body: AskStreamIn, session: AsyncSession = Depends(get_session)) -> StreamingResponse:
     """Stream cross-domain Q&A as Server-Sent Events (SSE).
 
-    Phase 1: orchestrator + regulations specialist. Earnings specialist hooks in later
-    using the same event schema and /ask UI.
+    Orchestrator coordinates regulations and earnings specialists, then synthesizes an answer.
     """
     ctx = body.context.model_dump() if body.context else {}
     lookback = body.context.lookback_days if body.context else 90

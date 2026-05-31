@@ -13,7 +13,7 @@ from app.services.llm.regulatory_tools import (
 )
 from app.services.regulations_service import get_document, impact_by_ticker, list_documents
 
-# Phase 2 will add earnings tools here (search_transcripts, get_analysis, …).
+# Phase 2 earnings tools live in earnings_tools.py.
 
 ASK_REG_TOOLS: list[dict[str, Any]] = [
     *BASE_REG_TOOLS,

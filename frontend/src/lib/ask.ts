@@ -41,6 +41,11 @@ export const ASK_TOOL_LABELS: Record<string, string> = {
   impact_by_ticker: "Matched rules to company profile",
   list_regulations: "Searched regulation catalog",
   get_regulation: "Opened regulation document",
+  list_transcripts_for_ticker: "Listed earnings transcripts",
+  get_transcript_analysis: "Loaded call analysis",
+  search_transcript_quotes: "Searched call quotes",
+  search_transcripts: "Searched transcript text",
+  company_earnings_timeline: "Reviewed earnings timeline",
 };
 
 export const ASK_AGENT_LABELS: Record<string, string> = {

@@ -8,11 +8,13 @@ from typing import Any, Awaitable, Callable
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.prompts.ask_prompts import SYNTHESIS_SYSTEM
+from app.services.ask.earnings_agent import run_earnings_agent
 from app.services.ask.events import AskEventEmitter
 from app.services.ask.regulations_agent import run_regulations_agent
 from app.services.company_profile_service import ensure_company_reg_profile
 from app.services.llm.anthropic_client import complete_json_with_usage
 from app.services.regulations_service import get_document
+from app.settings import settings
 
 EventCallback = Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -25,12 +27,20 @@ _EARNINGS_HINTS = (
     "next call",
     "said on",
     "talk about on",
+    "talks about",
+    "talk about",
     "how will they",
     "how might they",
+    "discuss",
+    "discusses",
+    "narrative",
+    "commentary",
     "ceo",
     "cfo",
     "guidance",
     "prepared remarks",
+    "mention on the call",
+    "say about",
 )
 
 _TICKER_STOP = frozenset(
@@ -119,7 +129,16 @@ def parse_intent(question: str, context: dict[str, Any] | None) -> dict[str, Any
     }
 
 
+def should_run_earnings(intent: dict[str, Any]) -> bool:
+    if intent.get("needs_earnings"):
+        return True
+    tickers = intent.get("tickers") or []
+    topics = intent.get("topics") or []
+    return bool(tickers and topics)
+
+
 def build_plan(intent: dict[str, Any]) -> dict[str, Any]:
+    run_earnings = should_run_earnings(intent)
     steps: list[dict[str, Any]] = [
         {"id": "parse", "agent": "orchestrator", "label": "Understand your question", "status": "done"},
         {
@@ -129,13 +148,13 @@ def build_plan(intent: dict[str, Any]) -> dict[str, Any]:
             "status": "pending",
         },
     ]
-    if intent.get("needs_earnings"):
+    if run_earnings:
         steps.append(
             {
                 "id": "earnings",
                 "agent": "earnings",
-                "label": "Review earnings call narrative (coming soon)",
-                "status": "skipped",
+                "label": "Review earnings call narrative",
+                "status": "pending",
             }
         )
     steps.append(
@@ -159,15 +178,17 @@ async def run_ask(
         await emit(emitter.next("run_end", status="error"))
         return
 
+    intent = parse_intent(q, context)
+    run_earnings = should_run_earnings(intent)
+
     await emit(
         emitter.next(
             "run_started",
             question=q,
-            phase="regulations_only",
+            phase="regulations_and_earnings" if run_earnings else "regulations_only",
         )
     )
 
-    intent = parse_intent(q, context)
     if intent.get("regulation_id"):
         doc = await get_document(session, str(intent["regulation_id"]))
         if doc:
@@ -184,20 +205,11 @@ async def run_ask(
                 if tk and tk not in tickers:
                     tickers.append(tk)
             intent["tickers"] = tickers[:5]
+            if tickers and (intent.get("topics") or intent.get("needs_earnings")):
+                run_earnings = should_run_earnings(intent)
+
     plan = build_plan(intent)
     await emit(emitter.next("plan", **plan))
-
-    if intent.get("needs_earnings"):
-        await emit(
-            emitter.next(
-                "message",
-                level="warn",
-                text=(
-                    "Your question mentions earnings calls. Phase 1 covers regulations only — "
-                    "earnings analysis will plug in here without changing the chat UI."
-                ),
-            )
-        )
 
     await emit(emitter.next("agent_start", agent="orchestrator", label="Planning"))
 
@@ -217,8 +229,12 @@ async def run_ask(
 
     await emit(emitter.next("agent_end", agent="orchestrator", status="ok", summary="Plan ready"))
 
+    in_reg = out_reg = in_ear = out_ear = 0
+    reg_brief: dict[str, Any]
+    earn_brief: dict[str, Any] | None = None
+
     await emit(emitter.next("agent_start", agent="regulations", label="Regulations research"))
-    brief, in_reg, out_reg = await run_regulations_agent(
+    reg_brief, in_reg, out_reg = await run_regulations_agent(
         session,
         question=q,
         intent=intent,
@@ -231,50 +247,91 @@ async def run_ask(
             "agent_end",
             agent="regulations",
             status="ok",
-            summary=(brief.get("research_summary") or "Regulations research complete.")[:240],
+            summary=(reg_brief.get("research_summary") or "Regulations research complete.")[:240],
         )
     )
 
+    if run_earnings:
+        await emit(emitter.next("agent_start", agent="earnings", label="Earnings research"))
+        earn_brief, in_ear, out_ear = await run_earnings_agent(
+            session,
+            question=q,
+            intent=intent,
+            emit=emit,
+            emitter=emitter,
+        )
+        await emit(
+            emitter.next(
+                "agent_end",
+                agent="earnings",
+                status="ok",
+                summary=(earn_brief.get("research_summary") or "Earnings research complete.")[:240],
+            )
+        )
+
     await emit(emitter.next("agent_start", agent="synthesizer", label="Writing answer"))
-    answer_payload, in_syn, out_syn = await _synthesize(q, intent, brief)
-    limitations = list(answer_payload.get("limitations") or [])
-    if intent.get("needs_earnings"):
-        limitations.append("Earnings call analysis is not enabled yet (regulations-only phase).")
-    answer_payload["limitations"] = limitations
-    answer_payload["agents_used"] = ["orchestrator", "regulations", "synthesizer"]
+    answer_payload, in_syn, out_syn = await _synthesize(q, intent, reg_brief, earn_brief)
+
+    agents_used = ["orchestrator", "regulations", "synthesizer"]
+    if run_earnings:
+        agents_used.insert(2, "earnings")
+    answer_payload["agents_used"] = agents_used
 
     await emit(emitter.next("answer", **{k: v for k, v in answer_payload.items() if k != "type"}))
     await emit(emitter.next("agent_end", agent="synthesizer", status="ok"))
 
-    status = "partial" if intent.get("needs_earnings") else "ok"
+    status = "ok"
+    if run_earnings and earn_brief:
+        gaps = earn_brief.get("gaps") or []
+        if gaps or not (earn_brief.get("key_transcripts") or earn_brief.get("notable_quotes")):
+            status = "partial"
+
     await emit(
         emitter.next(
             "run_end",
             status=status,
-            input_tokens=in_reg + in_syn,
-            output_tokens=out_reg + out_syn,
+            input_tokens=in_reg + in_ear + in_syn,
+            output_tokens=out_reg + out_ear + out_syn,
         )
     )
 
 
-async def _synthesize(question: str, intent: dict[str, Any], brief: dict[str, Any]) -> tuple[dict[str, Any], int, int]:
+async def _synthesize(
+    question: str,
+    intent: dict[str, Any],
+    reg_brief: dict[str, Any],
+    earn_brief: dict[str, Any] | None,
+) -> tuple[dict[str, Any], int, int]:
     if not settings.anthropic_api_key:
-        md = _fallback_markdown(question, intent, brief)
-        citations = _citations_from_brief(brief)
-        return {"markdown": md, "citations": citations, "limitations": brief.get("gaps") or []}, 0, 0
+        md = _fallback_markdown(question, intent, reg_brief, earn_brief)
+        citations = _citations_from_briefs(reg_brief, earn_brief)
+        limitations = list(reg_brief.get("gaps") or [])
+        if earn_brief:
+            limitations.extend(earn_brief.get("gaps") or [])
+        return {"markdown": md, "citations": citations, "limitations": limitations}, 0, 0
 
-    user = (
-        f"User question:\n{question}\n\n"
-        f"Intent:\n{json.dumps(intent, indent=2)}\n\n"
-        f"Regulations research brief:\n{json.dumps(brief, indent=2, default=str)}\n"
-    )
+    user_parts = [
+        f"User question:\n{question}\n",
+        f"Intent:\n{json.dumps(intent, indent=2)}\n",
+        f"Regulations research brief:\n{json.dumps(reg_brief, indent=2, default=str)}\n",
+    ]
+    if earn_brief:
+        user_parts.append(f"Earnings research brief:\n{json.dumps(earn_brief, indent=2, default=str)}\n")
+    else:
+        user_parts.append("Earnings research brief: not collected for this question.\n")
+    user = "\n".join(user_parts)
+
     parsed, in_t, out_t = await asyncio.to_thread(
         complete_json_with_usage,
         SYNTHESIS_SYSTEM,
         user,
         4096,
     )
-    citations = parsed.get("citations") if isinstance(parsed.get("citations"), list) else _citations_from_brief(brief)
+    citations = (
+        parsed.get("citations")
+        if isinstance(parsed.get("citations"), list)
+        else _citations_from_briefs(reg_brief, earn_brief)
+    )
     return {
         "markdown": str(parsed.get("markdown") or ""),
         "citations": citations,
@@ -282,47 +339,66 @@ async def _synthesize(question: str, intent: dict[str, Any], brief: dict[str, An
     }, in_t, out_t
 
 
-def _citations_from_brief(brief: dict[str, Any]) -> list[dict[str, Any]]:
+def _citations_from_briefs(reg_brief: dict[str, Any], earn_brief: dict[str, Any] | None) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
-    for doc in brief.get("key_documents") or []:
+    seen: set[tuple[str, str]] = set()
+
+    def add(kind: str, item_id: str, label: str, href: str) -> None:
+        key = (kind, item_id)
+        if key in seen:
+            return
+        seen.add(key)
+        out.append({"kind": kind, "id": item_id, "label": label, "href": href})
+
+    for doc in reg_brief.get("key_documents") or []:
         if not isinstance(doc, dict):
             continue
         doc_id = doc.get("id")
         if not doc_id:
             continue
         title = str(doc.get("title") or doc.get("document_number") or "Regulation")[:120]
-        out.append(
-            {
-                "kind": "regulation",
-                "id": str(doc_id),
-                "label": title,
-                "href": f"/regulations/{doc_id}",
-            }
-        )
-    for t in brief.get("tickers") or []:
-        tk = str(t).upper()
-        out.append(
-            {
-                "kind": "company_profile",
-                "id": tk,
-                "label": tk,
-                "href": f"/company/{tk}",
-            }
-        )
+        add("regulation", str(doc_id), title, f"/regulations/{doc_id}")
+
+    tickers = set(str(t).upper() for t in (reg_brief.get("tickers") or []))
+    if earn_brief:
+        tickers.update(str(t).upper() for t in (earn_brief.get("tickers") or []))
+    for tk in sorted(tickers):
+        add("company_profile", tk, tk, f"/company/{tk}")
+
+    if earn_brief:
+        for tr in earn_brief.get("key_transcripts") or []:
+            if not isinstance(tr, dict):
+                continue
+            tid = tr.get("transcript_id")
+            if not tid:
+                continue
+            tk = str(tr.get("ticker") or "").upper()
+            qtr = tr.get("quarter") or "call"
+            label = f"{tk} {qtr}".strip()[:120]
+            add("transcript", str(tid), label, f"/transcripts/{tid}")
+            add("analysis", str(tid), f"{label} analysis", f"/analysis/{tid}")
+
     return out
 
 
-def _fallback_markdown(question: str, intent: dict[str, Any], brief: dict[str, Any]) -> str:
+def _fallback_markdown(
+    question: str,
+    intent: dict[str, Any],
+    reg_brief: dict[str, Any],
+    earn_brief: dict[str, Any] | None,
+) -> str:
     lines = [
         f"**Question:** {question}",
         "",
-        brief.get("research_summary") or "_No summary available._",
+        "**Regulations**",
+        "",
+        reg_brief.get("research_summary") or "_No summary available._",
         "",
         "**Relevant documents**",
     ]
-    docs = brief.get("key_documents") or []
+    docs = reg_brief.get("key_documents") or []
     if not docs:
-        lines.append("- None found in the lookback window. Try ingesting/enriching regulations or seeding company profiles.")
+        lines.append("- None found in the lookback window.")
     else:
         for d in docs:
             title = d.get("title") or d.get("document_number") or "Document"
@@ -331,15 +407,36 @@ def _fallback_markdown(question: str, intent: dict[str, Any], brief: dict[str, A
                 lines.append(f"- [{title}](/regulations/{doc_id})")
             else:
                 lines.append(f"- {title}")
+
+    if earn_brief:
+        lines.extend(["", "**Earnings calls**", "", earn_brief.get("research_summary") or "_No earnings summary._"])
+        transcripts = earn_brief.get("key_transcripts") or []
+        if transcripts:
+            lines.append("")
+            lines.append("**Recent call themes**")
+            for tr in transcripts:
+                tid = tr.get("transcript_id")
+                tk = tr.get("ticker") or ""
+                qtr = tr.get("quarter") or ""
+                label = f"{tk} {qtr}".strip()
+                if tid:
+                    lines.append(f"- [{label}](/analysis/{tid})")
+                topics = tr.get("top_topics") or []
+                if topics:
+                    lines.append(f"  - Topics: {', '.join(str(t) for t in topics[:5])}")
+        quotes = earn_brief.get("notable_quotes") or []
+        if quotes:
+            lines.append("")
+            lines.append("**Notable quotes**")
+            for q in quotes[:3]:
+                speaker = q.get("speaker") or "Speaker"
+                excerpt = q.get("excerpt") or ""
+                lines.append(f'- {speaker}: "{excerpt}"')
+
     lines.extend(
         [
             "",
             "_Informational only — not legal or compliance advice. Set ANTHROPIC_API_KEY for full AI synthesis._",
         ]
     )
-    if intent.get("needs_earnings"):
-        lines.append("")
-        lines.append(
-            "_Note: Earnings call analysis is planned for a later release; this answer is regulations-only._"
-        )
     return "\n".join(lines)
