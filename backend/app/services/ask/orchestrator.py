@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from typing import Any, Awaitable, Callable
@@ -235,7 +236,12 @@ async def _synthesize(question: str, intent: dict[str, Any], brief: dict[str, An
         f"Intent:\n{json.dumps(intent, indent=2)}\n\n"
         f"Regulations research brief:\n{json.dumps(brief, indent=2, default=str)}\n"
     )
-    parsed, in_t, out_t = await complete_json_with_usage(SYNTHESIS_SYSTEM, user, max_tokens=4096)
+    parsed, in_t, out_t = await asyncio.to_thread(
+        complete_json_with_usage,
+        SYNTHESIS_SYSTEM,
+        user,
+        4096,
+    )
     citations = parsed.get("citations") if isinstance(parsed.get("citations"), list) else _citations_from_brief(brief)
     return {
         "markdown": str(parsed.get("markdown") or ""),
