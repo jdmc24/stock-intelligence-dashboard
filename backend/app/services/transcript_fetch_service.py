@@ -8,7 +8,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Transcript, TranscriptSection
-from app.services.analysis_runner import run_analysis
+from app.services.analysis_runner import run_analysis as run_transcript_analysis
 from app.services.earningscall_client import EarningsCallError, fetch_transcript as earningscall_fetch_transcript
 from app.services.transcript_parser import parse_sections
 from app.settings import settings
@@ -174,7 +174,7 @@ async def ensure_transcripts_for_ticker(
 
     if run_analysis and settings.anthropic_api_key and transcript.status == "raw":
         notes.append(f"Analyzing {t_up} {q_label} call — this may take a moment…")
-        await run_analysis(transcript.id)
+        await run_transcript_analysis(transcript.id)
         await session.refresh(transcript)
         if transcript.status == "analyzed":
             notes.append(f"Analysis complete for {t_up} {q_label}.")
