@@ -562,6 +562,171 @@ def _documents_filters(
     return apply
 
 
+SEVERITY_RANK: dict[str, int] = {"low": 1, "medium": 2, "high": 3, "critical": 4}
+
+ALLOWED_INSTITUTION_TYPES = frozenset(
+    {"commercial_bank", "credit_union", "mortgage_servicer", "broker_dealer", "fintech", "insurance", "other"}
+)
+
+
+def _severities_at_least(min_level: str | None) -> list[str] | None:
+    if not min_level or not str(min_level).strip():
+        return None
+    key = str(min_level).strip().lower()
+    rank = SEVERITY_RANK.get(key)
+    if rank is None:
+        return None
+    return [name for name, value in SEVERITY_RANK.items() if value >= rank]
+
+
+def _build_search_regulations_query(
+    *,
+    search: str | None,
+    severity_min: str | None,
+    lookback_days: int | None,
+    institution_type: str | None,
+    agency_substring: str | None,
+    require_enrichment: bool,
+):
+    """Shared filters for search_regulations count + list queries."""
+    if require_enrichment:
+        stmt = select(RegDocument, RegEnrichment).join(
+            RegEnrichment, RegEnrichment.document_id == RegDocument.id
+        )
+    else:
+        stmt = select(RegDocument, RegEnrichment).outerjoin(
+            RegEnrichment, RegEnrichment.document_id == RegDocument.id
+        )
+
+    filters_applied: dict[str, Any] = {"require_enrichment": require_enrichment}
+
+    if lookback_days is not None:
+        lb = max(1, min(int(lookback_days), 365))
+        since = dt.date.today() - dt.timedelta(days=lb)
+        stmt = stmt.where(RegDocument.publication_date >= since)
+        filters_applied["lookback_days"] = lb
+        filters_applied["publication_since"] = since.isoformat()
+
+    if search and search.strip():
+        term = f"%{search.strip()}%"
+        stmt = stmt.where(
+            or_(
+                RegDocument.title.ilike(term),
+                RegDocument.abstract.ilike(term),
+                RegDocument.search_text.ilike(term),
+            )
+        )
+        filters_applied["search"] = search.strip()
+
+    severities = _severities_at_least(severity_min)
+    if severities:
+        stmt = stmt.where(RegEnrichment.severity.in_(severities))
+        filters_applied["severity_min"] = str(severity_min).strip().lower()
+
+    if institution_type and institution_type.strip():
+        it = institution_type.strip().lower()
+        if it in ALLOWED_INSTITUTION_TYPES:
+            stmt = stmt.where(RegEnrichment.institution_types.ilike(f'%"{it}"%'))
+            filters_applied["institution_type"] = it
+
+    if agency_substring and agency_substring.strip():
+        agency = agency_substring.strip()
+        stmt = stmt.where(RegDocument.agencies.ilike(f"%{agency}%"))
+        filters_applied["agency"] = agency
+
+    return stmt, filters_applied
+
+
+async def search_regulations(
+    session: AsyncSession,
+    *,
+    search: str | None = None,
+    severity_min: str | None = None,
+    lookback_days: int | None = 90,
+    institution_type: str | None = None,
+    agency: str | None = None,
+    require_enrichment: bool = True,
+    limit: int = 10,
+) -> dict[str, Any]:
+    """Structured search over ingested Federal Register documents.
+
+    Prefer this over list_documents when the user asks about severity, time windows,
+    institution type (e.g. commercial_bank), or agency (OCC, FDIC, Federal Reserve).
+    """
+    n = max(1, min(int(limit or 10), 25))
+    stmt, filters_applied = _build_search_regulations_query(
+        search=search,
+        severity_min=severity_min,
+        lookback_days=lookback_days,
+        institution_type=institution_type,
+        agency_substring=agency,
+        require_enrichment=require_enrichment,
+    )
+
+    count_stmt = select(func.count()).select_from(stmt.with_only_columns(RegDocument.id).subquery())
+    total = int((await session.execute(count_stmt)).scalar() or 0)
+
+    rows = (
+        await session.execute(
+            stmt.order_by(RegDocument.publication_date.desc(), RegDocument.created_at.desc()).limit(n)
+        )
+    ).all()
+
+    matches: list[dict[str, Any]] = []
+    for d, e in rows:
+        doc = _doc_to_dict(d, e)
+        enrichment = doc.get("enrichment") or {}
+        inst_types: list[str] = []
+        if e and e.institution_types:
+            try:
+                parsed = json.loads(e.institution_types)
+                if isinstance(parsed, list):
+                    inst_types = [str(x) for x in parsed][:6]
+            except json.JSONDecodeError:
+                pass
+        matches.append(
+            {
+                "id": doc.get("id"),
+                "document_number": doc.get("document_number"),
+                "title": (doc.get("title") or "")[:220],
+                "publication_date": doc.get("publication_date"),
+                "agencies": doc.get("agencies"),
+                "status": doc.get("status"),
+                "severity": enrichment.get("severity"),
+                "severity_rationale": (e.severity_rationale or "")[:240] if e else None,
+                "institution_types": inst_types,
+                "summary_excerpt": (enrichment.get("summary") or doc.get("abstract") or "")[:320],
+            }
+        )
+
+    note: str | None = None
+    if total == 0:
+        n_docs = int(await session.scalar(select(func.count()).select_from(RegDocument)) or 0)
+        n_enriched = int(
+            await session.scalar(
+                select(func.count()).select_from(RegDocument).where(RegDocument.status == "enriched")
+            )
+            or 0
+        )
+        if n_docs == 0:
+            note = "No Federal Register documents ingested yet — run POST /api/regulations/ingest/trigger."
+        elif require_enrichment and n_enriched == 0:
+            note = "Documents exist but none are enriched — run POST /api/regulations/enrich/trigger for severity tags."
+        elif require_enrichment and severity_min:
+            note = "No enriched documents matched these filters in the lookback window."
+        else:
+            note = "No documents matched these filters."
+
+    return {
+        "found": bool(matches),
+        "matches": matches,
+        "count": len(matches),
+        "total": total,
+        "filters": filters_applied,
+        "note": note,
+    }
+
+
 async def list_documents(
     session: AsyncSession,
     *,

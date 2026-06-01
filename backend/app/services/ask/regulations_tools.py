@@ -11,12 +11,65 @@ from app.services.llm.regulatory_tools import (
     _lookup_company_profile,
     _search_related_regulations,
 )
-from app.services.regulations_service import get_document, impact_by_ticker, list_documents
+from app.services.regulations_service import get_document, impact_by_ticker, list_documents, search_regulations
 
 # Phase 2 earnings tools live in earnings_tools.py.
 
 ASK_REG_TOOLS: list[dict[str, Any]] = [
     *BASE_REG_TOOLS,
+    {
+        "name": "search_regulations",
+        "description": (
+            "Structured search over ingested Federal Register documents with optional filters: "
+            "keyword, minimum severity (low|medium|high|critical), lookback_days, institution_type "
+            "(commercial_bank, broker_dealer, fintech, …), and agency substring (OCC, FDIC, CFPB). "
+            "Requires enriched documents for severity/institution filters. "
+            "Prefer this for questions like 'high-severity banking rules in the last 90 days'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "search": {
+                    "type": "string",
+                    "description": "Optional keyword in title/abstract/body.",
+                },
+                "severity_min": {
+                    "type": "string",
+                    "enum": ["low", "medium", "high", "critical"],
+                    "description": "Minimum severity (includes higher levels). Use high for high-severity requests.",
+                },
+                "lookback_days": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 365,
+                    "description": "Publication window in days (default 90).",
+                },
+                "institution_type": {
+                    "type": "string",
+                    "enum": [
+                        "commercial_bank",
+                        "credit_union",
+                        "mortgage_servicer",
+                        "broker_dealer",
+                        "fintech",
+                        "insurance",
+                        "other",
+                    ],
+                    "description": "Filter enriched docs affecting this institution type.",
+                },
+                "agency": {
+                    "type": "string",
+                    "description": "Agency name substring, e.g. OCC, FDIC, Federal Reserve, CFPB.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 25,
+                    "description": "Max documents (default 10).",
+                },
+            },
+        },
+    },
     {
         "name": "impact_by_ticker",
         "description": (
@@ -41,8 +94,8 @@ ASK_REG_TOOLS: list[dict[str, Any]] = [
     {
         "name": "list_regulations",
         "description": (
-            "Keyword search over ingested Federal Register documents (title/abstract/body). "
-            "Use for topic-led questions when impact_by_ticker is not enough."
+            "Simple keyword search over ingested Federal Register documents (title/abstract/body). "
+            "No severity or date filters — use search_regulations for those."
         ),
         "input_schema": {
             "type": "object",
@@ -157,6 +210,28 @@ async def _list_regulations_tool(session: AsyncSession, search: str, limit: int 
     return {"matches": matches, "count": len(matches), "total": total, "search": q}
 
 
+async def _search_regulations_tool(
+    session: AsyncSession,
+    *,
+    search: str | None = None,
+    severity_min: str | None = None,
+    lookback_days: int = 90,
+    institution_type: str | None = None,
+    agency: str | None = None,
+    limit: int = 10,
+) -> dict[str, Any]:
+    return await search_regulations(
+        session,
+        search=search,
+        severity_min=severity_min,
+        lookback_days=lookback_days,
+        institution_type=institution_type,
+        agency=agency,
+        require_enrichment=True,
+        limit=limit,
+    )
+
+
 async def execute_ask_reg_tool(session: AsyncSession, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     args = arguments or {}
     if name == "search_related_regulations":
@@ -173,6 +248,16 @@ async def execute_ask_reg_tool(session: AsyncSession, name: str, arguments: dict
             ticker=str(args.get("ticker") or ""),
             lookback_days=int(args.get("lookback_days") or 90),
         )
+    if name == "search_regulations":
+        return await _search_regulations_tool(
+            session,
+            search=str(args.get("search") or "") or None,
+            severity_min=str(args.get("severity_min") or "") or None,
+            lookback_days=int(args.get("lookback_days") or 90),
+            institution_type=str(args.get("institution_type") or "") or None,
+            agency=str(args.get("agency") or "") or None,
+            limit=int(args.get("limit") or 10),
+        )
     if name == "list_regulations":
         return await _list_regulations_tool(
             session,
@@ -187,6 +272,7 @@ async def execute_ask_reg_tool(session: AsyncSession, name: str, arguments: dict
 TOOL_LABELS: dict[str, str] = {
     "lookup_company_profile": "Looked up company profile",
     "search_related_regulations": "Searched related regulations",
+    "search_regulations": "Searched regulations (filtered)",
     "impact_by_ticker": "Matched regulations to ticker profile",
     "list_regulations": "Searched regulation catalog",
     "get_regulation": "Opened regulation document",

@@ -39,6 +39,7 @@ export const ASK_TOOLS_BY_AGENT: Record<"regulations" | "earnings", readonly str
   regulations: [
     "lookup_company_profile",
     "search_related_regulations",
+    "search_regulations",
     "impact_by_ticker",
     "list_regulations",
     "get_regulation",
@@ -55,6 +56,7 @@ export const ASK_TOOLS_BY_AGENT: Record<"regulations" | "earnings", readonly str
 export const ASK_TOOL_LABELS: Record<string, string> = {
   lookup_company_profile: "Looked up company profile",
   search_related_regulations: "Searched related regulations",
+  search_regulations: "Searched regulations (filtered)",
   impact_by_ticker: "Matched rules to company profile",
   list_regulations: "Searched regulation catalog",
   get_regulation: "Opened regulation document",

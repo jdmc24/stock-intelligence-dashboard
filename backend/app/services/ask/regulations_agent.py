@@ -54,7 +54,7 @@ async def run_regulations_agent(
         )
 
     async def tool_dispatch(name: str, args: dict[str, Any]) -> dict[str, Any]:
-        if name == "impact_by_ticker" and "lookback_days" not in (args or {}):
+        if name in ("impact_by_ticker", "search_regulations") and "lookback_days" not in (args or {}):
             args = {**(args or {}), "lookback_days": lookback_days}
         return await run_tool_with_events(session, name, args or {}, emit_tool_start, emit_tool_end)
 
@@ -170,8 +170,12 @@ async def _deterministic_brief(
     query = " ".join(topics) if topics else "regulation"
     search = await run_tool_with_events(
         session,
-        "list_regulations",
-        {"search": query, "limit": 5},
+        "search_regulations",
+        {
+            "search": query,
+            "lookback_days": lookback_days,
+            "limit": 8,
+        },
         emit_tool_start,
         emit_tool_end,
     )
