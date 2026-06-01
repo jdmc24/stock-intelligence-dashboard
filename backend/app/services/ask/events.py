@@ -8,6 +8,8 @@ from uuid import uuid4
 
 EventCallback = Callable[[dict[str, Any]], Awaitable[None]]
 
+SSE_HEARTBEAT_SECONDS = 12.0
+
 
 class AskEventEmitter:
     """Builds monotonic SSE event payloads for a single ask run."""
@@ -37,9 +39,20 @@ async def sse_stream(run: Callable[[AskEventEmitter, EventCallback], Awaitable[N
     """Run an ask pipeline and yield SSE frames."""
     emitter = AskEventEmitter()
     queue: asyncio.Queue[str | None] = asyncio.Queue()
+    done = asyncio.Event()
 
     async def on_event(event: dict[str, Any]) -> None:
         await queue.put(format_sse(event))
+
+    async def heartbeat() -> None:
+        try:
+            while not done.is_set():
+                await asyncio.sleep(SSE_HEARTBEAT_SECONDS)
+                if done.is_set():
+                    break
+                await queue.put(format_sse(emitter.next("ping")))
+        except asyncio.CancelledError:
+            return
 
     async def producer() -> None:
         try:
@@ -50,9 +63,11 @@ async def sse_stream(run: Callable[[AskEventEmitter, EventCallback], Awaitable[N
             end = emitter.next("run_end", status="error")
             await queue.put(format_sse(end))
         finally:
+            done.set()
             await queue.put(None)
 
-    task = asyncio.create_task(producer())
+    producer_task = asyncio.create_task(producer())
+    heartbeat_task = asyncio.create_task(heartbeat())
     try:
         while True:
             chunk = await queue.get()
@@ -60,4 +75,8 @@ async def sse_stream(run: Callable[[AskEventEmitter, EventCallback], Awaitable[N
                 break
             yield chunk
     finally:
-        await task
+        done.set()
+        heartbeat_task.cancel()
+        with asyncio.suppress(asyncio.CancelledError):
+            await heartbeat_task
+        await producer_task

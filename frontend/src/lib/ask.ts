@@ -100,6 +100,9 @@ export async function streamAsk(
   onEvent: (event: AskEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {
+  let sawAnswer = false;
+  let sawRunEnd = false;
+
   const r = await fetch(`${API_BASE}/api/ask/stream`, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
@@ -108,10 +111,11 @@ export async function streamAsk(
     signal,
   });
   if (!r.ok) {
-    throw new Error(await r.text());
+    const detail = (await r.text()).trim();
+    throw new Error(detail || `Ask request failed (${r.status})`);
   }
   if (!r.body) {
-    throw new Error("No response body");
+    throw new Error("No response body from Ask API");
   }
 
   const reader = r.body.getReader();
@@ -126,12 +130,25 @@ export async function streamAsk(
     buffer = parts.pop() ?? "";
     for (const part of parts) {
       const ev = parseSseBlock(part);
-      if (ev) onEvent(ev);
+      if (!ev) continue;
+      if (ev.type === "answer") sawAnswer = true;
+      if (ev.type === "run_end") sawRunEnd = true;
+      onEvent(ev);
     }
   }
   if (buffer.trim()) {
     const ev = parseSseBlock(buffer);
-    if (ev) onEvent(ev);
+    if (ev) {
+      if (ev.type === "answer") sawAnswer = true;
+      if (ev.type === "run_end") sawRunEnd = true;
+      onEvent(ev);
+    }
+  }
+
+  if (!sawAnswer && !sawRunEnd) {
+    throw new Error(
+      "Ask stream ended before an answer arrived. The API connection may have timed out — try again, or check Railway logs for the backend service.",
+    );
   }
 }
 

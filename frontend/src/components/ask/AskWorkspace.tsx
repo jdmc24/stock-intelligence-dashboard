@@ -114,7 +114,12 @@ export function AskWorkspace({
         );
       } catch (err) {
         if ((err as Error).name !== "AbortError") {
-          setError(err instanceof Error ? err.message : "Request failed");
+          const raw = err instanceof Error ? err.message : "Request failed";
+          const message =
+            raw === "Failed to fetch" || raw === "NetworkError when attempting to fetch resource."
+              ? "Could not reach the Ask API. Check NEXT_PUBLIC_BACKEND_URL and that the Railway backend is running."
+              : raw;
+          setError(message);
         }
       } finally {
         setRunning(false);

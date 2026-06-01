@@ -136,11 +136,8 @@ def parse_intent(question: str, context: dict[str, Any] | None) -> dict[str, Any
 
 
 def should_run_earnings(intent: dict[str, Any]) -> bool:
-    if intent.get("needs_earnings"):
-        return True
-    tickers = intent.get("tickers") or []
-    topics = intent.get("topics") or []
-    return bool(tickers and topics)
+    """Only run the earnings specialist when the question is about calls/transcripts."""
+    return bool(intent.get("needs_earnings"))
 
 
 def build_plan(intent: dict[str, Any]) -> dict[str, Any]:
