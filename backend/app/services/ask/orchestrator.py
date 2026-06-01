@@ -12,7 +12,11 @@ from app.services.ask.earnings_agent import run_earnings_agent
 from app.services.ask.events import AskEventEmitter
 from app.services.ask.regulations_agent import run_regulations_agent
 from app.services.company_profile_service import ensure_company_reg_profile
-from app.services.transcript_fetch_service import ensure_transcripts_for_ticker
+from app.services.transcript_fetch_service import (
+    ASK_EARNINGS_MAX_FETCH_PER_RUN,
+    ASK_EARNINGS_MIN_TRANSCRIPTS,
+    ensure_transcripts_for_ticker,
+)
 from app.services.llm.anthropic_client import complete_json_with_usage
 from app.services.regulations_service import get_document
 from app.settings import settings
@@ -233,8 +237,8 @@ async def run_ask(
             _transcripts, fetch_notes = await ensure_transcripts_for_ticker(
                 session,
                 str(tk),
-                min_count=4,
-                max_fetch=4,
+                min_count=ASK_EARNINGS_MIN_TRANSCRIPTS,
+                max_fetch=ASK_EARNINGS_MAX_FETCH_PER_RUN,
                 run_analysis=True,
             )
             for note in fetch_notes:

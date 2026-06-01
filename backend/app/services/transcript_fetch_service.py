@@ -23,8 +23,9 @@ logger = logging.getLogger(__name__)
 _USABLE_STATUSES = frozenset({"raw", "analyzed"})
 
 # Ask orchestrator: pre-load this many recent calls per ticker (not an LLM tool — runs before the agent).
-ASK_EARNINGS_MIN_TRANSCRIPTS = 4
-ASK_EARNINGS_MAX_FETCH_PER_RUN = 4
+ASK_EARNINGS_MIN_TRANSCRIPTS = 16
+ASK_EARNINGS_MAX_FETCH_PER_RUN = 16
+ASK_EARNINGS_QUARTER_LOOKBACK = 20
 
 
 def _quarter_label(year: int, quarter: int) -> str:
@@ -165,7 +166,7 @@ async def fetch_next_missing_quarter(
         return None
     have = stored_labels if stored_labels is not None else await _stored_quarter_labels(session, t_up)
 
-    for spec in candidate_quarters(back=12):
+    for spec in candidate_quarters(back=ASK_EARNINGS_QUARTER_LOOKBACK):
         label = _quarter_label(spec.year, spec.quarter)
         if label in have:
             continue
@@ -220,8 +221,9 @@ async def ensure_transcripts_for_ticker(
     if not t_up:
         return [], notes
 
-    target = max(1, min(int(min_count), 12))
-    cap = max(1, min(int(max_fetch), 12))
+    max_quarters = ASK_EARNINGS_MIN_TRANSCRIPTS
+    target = max(1, min(int(min_count), max_quarters))
+    cap = max(1, min(int(max_fetch), max_quarters))
     stored = await _stored_quarter_labels(session, t_up)
     fetched: list[Transcript] = []
 
@@ -250,8 +252,11 @@ async def ensure_transcripts_for_ticker(
     transcripts = list(res.scalars().all())
 
     if len(transcripts) >= 2:
-        quarters = ", ".join(t.quarter or "?" for t in transcripts[:4])
-        notes.append(f"{t_up}: {len(transcripts)} earnings call(s) available for Ask ({quarters}).")
+        shown = transcripts[:6]
+        quarters = ", ".join(t.quarter or "?" for t in shown)
+        extra = len(transcripts) - len(shown)
+        suffix = f", +{extra} more" if extra > 0 else ""
+        notes.append(f"{t_up}: {len(transcripts)} earnings call(s) available for Ask ({quarters}{suffix}).")
 
     if not fetched and not transcripts:
         try:
