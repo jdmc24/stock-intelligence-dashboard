@@ -22,8 +22,8 @@ export default function HomePage() {
             Ask about earnings &amp; regulations
           </h1>
           <p className="mt-3 text-sm leading-relaxed text-zinc-600 dark:text-zinc-400">
-            Type a question in plain English. The orchestrator researches Federal Register rules for your
-            company (earnings-call analysis coming next). Watch each step on the right.
+            Type a question in plain English. The orchestrator researches Federal Register rules and earnings
+            call narrative for your company. Watch each step on the right.
           </p>
         </div>
 
