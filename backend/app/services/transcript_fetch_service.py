@@ -9,7 +9,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Transcript, TranscriptSection
 from app.services.analysis_runner import run_analysis as run_transcript_analysis
-from app.services.earningscall_client import EarningsCallError, fetch_transcript as earningscall_fetch_transcript
+from app.services.earningscall_client import (
+    EarningsCallError,
+    fetch_transcript as earningscall_fetch_transcript,
+    normalize_earnings_ticker,
+)
 from app.services.transcript_parser import parse_sections
 from app.settings import settings
 
@@ -140,8 +144,8 @@ async def ensure_transcripts_for_ticker(
     Fetches the latest call from EarningsCall when none are stored locally.
     Optionally runs AI analysis so timeline and analysis tools have data.
     """
-    t_up = (ticker or "").strip().upper()
     notes: list[str] = []
+    t_up = normalize_earnings_ticker(ticker)
     if not t_up:
         return [], notes
 

@@ -9,6 +9,19 @@ class EarningsCallError(RuntimeError):
     pass
 
 
+# Common mis-parses / aliases → EarningsCall symbol
+_TICKER_ALIASES: dict[str, str] = {
+    "JPMC": "JPM",
+    "JPMORGAN": "JPM",
+    "GOOG": "GOOGL",
+}
+
+
+def normalize_earnings_ticker(ticker: str) -> str:
+    sym = (ticker or "").strip().upper()
+    return _TICKER_ALIASES.get(sym, sym)
+
+
 @dataclass(frozen=True)
 class QuarterSpec:
     year: int
@@ -65,9 +78,9 @@ async def fetch_transcript(
     except Exception as e:
         raise EarningsCallError(f"earningscall SDK not installed/available: {e}")
 
-    sym = ticker.strip().upper()
+    sym = normalize_earnings_ticker(ticker)
     try:
-        company = get_company(ticker.lower())
+        company = get_company(sym.lower())
     except InsufficientApiAccessError as e:
         raise EarningsCallError(
             f"{e} Free/demo tier usually includes AAPL and MSFT; other tickers need an EarningsCall API key in backend .env."
@@ -76,6 +89,8 @@ async def fetch_transcript(
         hint = ""
         if sym == "NIKE":
             hint = " Nike trades under ticker NKE."
+        elif sym == "JPM" and ticker.strip().upper() == "JPMC":
+            hint = " (JPMC was mapped to JPM — use JPM for JPMorgan Chase.)"
         raise EarningsCallError(
             f"Unknown ticker or not available on your EarningsCall plan: {sym}.{hint}"
             " Free tier commonly includes AAPL and MSFT only; other symbols need a paid API key."
