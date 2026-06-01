@@ -12,7 +12,7 @@ from app.services.ask.earnings_agent import run_earnings_agent
 from app.services.ask.events import AskEventEmitter
 from app.services.ask.regulations_agent import run_regulations_agent
 from app.services.company_profile_service import ensure_company_reg_profile
-from app.services.ticker_resolution import resolve_tickers_from_text
+from app.services.ticker_resolution import resolve_tickers_for_question
 from app.services.transcript_fetch_service import (
     ASK_EARNINGS_MAX_FETCH_PER_RUN,
     ASK_EARNINGS_MIN_TRANSCRIPTS,
@@ -118,8 +118,6 @@ def parse_intent(question: str, context: dict[str, Any] | None) -> dict[str, Any
         if sym not in _TICKER_STOP and sym not in tickers:
             tickers.append(sym)
 
-    tickers = resolve_tickers_from_text(q, tickers)
-
     needs_earnings = any(h in q_lower for h in _EARNINGS_HINTS)
 
     topics: list[str] = []
@@ -191,6 +189,14 @@ async def run_ask(
         return
 
     intent = parse_intent(q, context)
+
+    resolved_tickers, ticker_notes = await resolve_tickers_for_question(
+        session,
+        q,
+        intent.get("tickers"),
+    )
+    intent["tickers"] = resolved_tickers
+
     run_earnings = should_run_earnings(intent)
 
     await emit(
@@ -200,6 +206,9 @@ async def run_ask(
             phase="regulations_and_earnings" if run_earnings else "regulations_only",
         )
     )
+
+    for note in ticker_notes:
+        await emit(emitter.next("message", level="info", text=note))
 
     if intent.get("regulation_id"):
         doc = await get_document(session, str(intent["regulation_id"]))

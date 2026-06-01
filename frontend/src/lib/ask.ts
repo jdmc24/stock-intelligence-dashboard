@@ -37,6 +37,7 @@ export type AskContext = {
 
 export const ASK_TOOLS_BY_AGENT: Record<"regulations" | "earnings", readonly string[]> = {
   regulations: [
+    "lookup_company_ticker",
     "lookup_company_profile",
     "search_related_regulations",
     "search_regulations",
@@ -45,6 +46,7 @@ export const ASK_TOOLS_BY_AGENT: Record<"regulations" | "earnings", readonly str
     "get_regulation",
   ],
   earnings: [
+    "lookup_company_ticker",
     "list_transcripts_for_ticker",
     "get_transcript_analysis",
     "search_transcript_quotes",
@@ -54,6 +56,7 @@ export const ASK_TOOLS_BY_AGENT: Record<"regulations" | "earnings", readonly str
 };
 
 export const ASK_TOOL_LABELS: Record<string, string> = {
+  lookup_company_ticker: "Resolved company name to ticker",
   lookup_company_profile: "Looked up company profile",
   search_related_regulations: "Searched related regulations",
   search_regulations: "Searched regulations (filtered)",

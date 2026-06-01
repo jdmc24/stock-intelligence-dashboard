@@ -13,6 +13,7 @@ Tool definitions live in code; this document is the reference for what exists an
 
 | Tool | Purpose | Key inputs | Notes |
 |------|---------|------------|-------|
+| **`lookup_company_ticker`** | **Resolve company name → ticker(s)** | `company_name`, `limit` | **Shared.** SEC registry + app DB names |
 | `lookup_company_profile` | Load ticker regulatory profile (products, functions, institution types) | `ticker` | Shared with enrichment tools |
 | `search_related_regulations` | Keyword search on title/abstract of prior FR docs | `query`, `limit` | Shared with enrichment tools |
 | **`search_regulations`** | **Filtered search over ingested + enriched FR docs** | `search`, `severity_min`, `lookback_days`, `institution_type`, `agency`, `limit` | **New.** Use for “high-severity banking rules in 90 days” |
@@ -43,6 +44,7 @@ Requires **enriched** documents for severity and institution filters. Empty resu
 
 | Tool | Purpose | Key inputs | Notes |
 |------|---------|------------|-------|
+| **`lookup_company_ticker`** | **Resolve company name → ticker(s)** | `company_name`, `limit` | **Shared with regulations agent.** SEC registry + app DB |
 | `list_transcripts_for_ticker` | List stored earnings calls for a ticker | `ticker`, `limit` | Read-only |
 | `get_transcript_analysis` | Load AI analysis (summary, sentiment, topics, guidance) | `transcript_id` | Does not start new analysis jobs |
 | `search_transcript_quotes` | Find speaker sections containing a phrase | `query`, `company` | Best for “how they talked about AI” |
@@ -63,9 +65,10 @@ Requires **enriched** documents for severity and institution filters. Empty resu
 The orchestrator does not expose tools to Claude. It:
 
 1. Parses intent (tickers, topics, earnings hints)
-2. Ensures company profiles and transcripts exist
-3. Runs regulations ± earnings specialists
-4. Synthesizes a markdown answer
+2. **Resolves company names to tickers** via the SEC public registry (`lookup_company_ticker` logic) before agents run
+3. Ensures company profiles and transcripts exist
+4. Runs regulations ± earnings specialists
+5. Synthesizes a markdown answer
 
 **SSE events:** `run_started`, `plan`, `agent_start` / `agent_end`, `tool_start` / `tool_end`, `message`, `answer`, `run_end`
 

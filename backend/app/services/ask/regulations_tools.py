@@ -11,12 +11,13 @@ from app.services.llm.regulatory_tools import (
     _lookup_company_profile,
     _search_related_regulations,
 )
-from app.services.regulations_service import get_document, impact_by_ticker, list_documents, search_regulations
+from app.services.ticker_resolution import LOOKUP_COMPANY_TICKER_TOOL, lookup_company_ticker
 
 # Phase 2 earnings tools live in earnings_tools.py.
 
 ASK_REG_TOOLS: list[dict[str, Any]] = [
     *BASE_REG_TOOLS,
+    LOOKUP_COMPANY_TICKER_TOOL,
     {
         "name": "search_regulations",
         "description": (
@@ -234,6 +235,12 @@ async def _search_regulations_tool(
 
 async def execute_ask_reg_tool(session: AsyncSession, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     args = arguments or {}
+    if name == "lookup_company_ticker":
+        return await lookup_company_ticker(
+            session,
+            company_name=str(args.get("company_name") or ""),
+            limit=int(args.get("limit") or 3),
+        )
     if name == "search_related_regulations":
         return await _search_related_regulations(
             session,
@@ -270,6 +277,7 @@ async def execute_ask_reg_tool(session: AsyncSession, name: str, arguments: dict
 
 
 TOOL_LABELS: dict[str, str] = {
+    "lookup_company_ticker": "Resolved company name to ticker",
     "lookup_company_profile": "Looked up company profile",
     "search_related_regulations": "Searched related regulations",
     "search_regulations": "Searched regulations (filtered)",

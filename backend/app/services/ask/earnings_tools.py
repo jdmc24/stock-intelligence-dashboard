@@ -10,7 +10,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import AnalysisResult, Transcript, TranscriptSection
 from app.services.comparison_runner import quarter_sort_key
 
+from app.services.ticker_resolution import LOOKUP_COMPANY_TICKER_TOOL, lookup_company_ticker
+
 ASK_EARNINGS_TOOLS: list[dict[str, Any]] = [
+    LOOKUP_COMPANY_TICKER_TOOL,
     {
         "name": "list_transcripts_for_ticker",
         "description": (
@@ -369,6 +372,12 @@ async def _company_earnings_timeline(session: AsyncSession, ticker: str) -> dict
 
 async def execute_ask_earnings_tool(session: AsyncSession, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     args = arguments or {}
+    if name == "lookup_company_ticker":
+        return await lookup_company_ticker(
+            session,
+            company_name=str(args.get("company_name") or ""),
+            limit=int(args.get("limit") or 3),
+        )
     if name == "list_transcripts_for_ticker":
         return await _list_transcripts_for_ticker(
             session,
