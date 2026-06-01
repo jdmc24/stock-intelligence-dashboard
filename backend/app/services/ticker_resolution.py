@@ -100,8 +100,16 @@ _FILLER = frozenset(
         "during",
         "after",
         "before",
-        "publicly",
-        "traded",
+        "using",
+        "mention",
+        "mentioned",
+        "did",
+        "have",
+        "has",
+        "any",
+        "all",
+        "tell",
+        "using",
     }
 )
 
@@ -174,12 +182,18 @@ def extract_name_candidates(text: str) -> list[str]:
     candidates: list[str] = []
 
     for pattern in (
+        r"\btell me about\s+(.+?)(?:[?.!]|$|\s+(?:are|is|did|do|have|has|was|were)\b)",
+        r"\babout\s+([a-zA-Z][\w'.-]*(?:\s+[a-zA-Z][\w'.-]*){0,3})",
         r"\bfor\s+(.+?)\s+to\s+(.+?)(?:'s|\s+(?:latest|earnings|call|quarter))",
         r"\bbetween\s+(.+?)\s+and\s+(.+?)(?:'s|\s+(?:latest|earnings|call|quarter))",
     ):
         match = re.search(pattern, q, re.IGNORECASE)
-        if match:
+        if not match:
+            continue
+        if match.lastindex and match.lastindex >= 2:
             candidates.extend([_clean_candidate(match.group(1)), _clean_candidate(match.group(2))])
+        else:
+            candidates.append(_clean_candidate(match.group(1)))
 
     for sep in (r"\bvs\.?\b", r"\bversus\b", r"\bcompared to\b"):
         if re.search(sep, q, re.IGNORECASE):
@@ -198,6 +212,11 @@ def extract_name_candidates(text: str) -> list[str]:
             phrase = " ".join(words[i : i + n])
             if len(phrase) >= 5:
                 candidates.append(phrase)
+
+    for word in words:
+        token = word.strip("'.")
+        if len(token) >= 5 and token.lower() not in _FILLER:
+            candidates.append(token)
 
     seen: set[str] = set()
     out: list[str] = []

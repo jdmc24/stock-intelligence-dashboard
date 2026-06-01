@@ -243,6 +243,7 @@ async def run_ask(
 
     if run_earnings:
         min_count, max_fetch = ask_prefetch_targets(q)
+        prefetch_notes: list[str] = []
         for tk in intent.get("tickers") or []:
             _transcripts, fetch_notes = await ensure_transcripts_for_ticker(
                 session,
@@ -251,9 +252,17 @@ async def run_ask(
                 max_fetch=max_fetch,
                 run_analysis=True,
             )
+            prefetch_notes.extend(fetch_notes)
             for note in fetch_notes:
-                level = "warn" if note.startswith("Could not fetch") else "info"
+                level = "warn" if note.startswith("Could not fetch") or note.startswith("No earnings") else "info"
                 await emit(emitter.next("message", level=level, text=note))
+        if run_earnings and not intent.get("tickers"):
+            prefetch_notes.append(
+                "No ticker resolved from the company name — transcript prefetch was skipped. "
+                "Try including the ticker symbol (e.g. COST) or a clearer company name."
+            )
+            await emit(emitter.next("message", level="warn", text=prefetch_notes[-1]))
+        intent["prefetch_notes"] = prefetch_notes
 
     await emit(emitter.next("agent_end", agent="orchestrator", status="ok", summary="Plan ready"))
 
@@ -336,6 +345,9 @@ async def _synthesize(
         limitations = list(reg_brief.get("gaps") or [])
         if earn_brief:
             limitations.extend(earn_brief.get("gaps") or [])
+        for note in intent.get("prefetch_notes") or []:
+            if note.startswith("Could not fetch") or note.startswith("No earnings") or "skipped" in note.lower():
+                limitations.append(note)
         return {"markdown": md, "citations": citations, "limitations": limitations}, 0, 0
 
     user_parts = [
@@ -366,6 +378,9 @@ async def _synthesize(
         limitations = list(reg_brief.get("gaps") or [])
         if earn_brief:
             limitations.extend(earn_brief.get("gaps") or [])
+        for note in intent.get("prefetch_notes") or []:
+            if note.startswith("Could not fetch") or note.startswith("No earnings") or "skipped" in note.lower():
+                limitations.append(note)
         limitations.append("Answer synthesized from research briefs after JSON parse failure.")
         return {"markdown": md, "citations": citations, "limitations": limitations}, 0, 0
 
@@ -374,10 +389,15 @@ async def _synthesize(
         if isinstance(parsed.get("citations"), list)
         else _citations_from_briefs(reg_brief, earn_brief)
     )
+    limitations = parsed.get("limitations") if isinstance(parsed.get("limitations"), list) else []
+    for note in intent.get("prefetch_notes") or []:
+        if note.startswith("Could not fetch") or note.startswith("No earnings") or "skipped" in note.lower():
+            if note not in limitations:
+                limitations.append(note)
     return {
         "markdown": str(parsed.get("markdown") or ""),
         "citations": citations,
-        "limitations": parsed.get("limitations") if isinstance(parsed.get("limitations"), list) else [],
+        "limitations": limitations,
     }, in_t, out_t
 
 
