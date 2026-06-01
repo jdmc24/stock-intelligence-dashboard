@@ -233,7 +233,8 @@ async def run_ask(
             _transcripts, fetch_notes = await ensure_transcripts_for_ticker(
                 session,
                 str(tk),
-                min_count=1,
+                min_count=4,
+                max_fetch=4,
                 run_analysis=True,
             )
             for note in fetch_notes:

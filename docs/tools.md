@@ -49,7 +49,12 @@ Requires **enriched** documents for severity and institution filters. Empty resu
 | `search_transcripts` | Full-text keyword search in transcript bodies | `company`, `q` / `topic`, `limit` | Returns snippets |
 | `company_earnings_timeline` | Per-quarter tone, hedging, topics for analyzed calls | `ticker` | Needs analyzed transcripts |
 
-**Auto-fetch:** Before the earnings agent runs, the orchestrator may call `ensure_transcripts_for_ticker()` (`transcript_fetch_service.py`) to pull the latest call from EarningsCall and run analysis.
+**Auto-fetch (orchestrator, not an LLM tool):** Before the earnings agent runs, `ensure_transcripts_for_ticker()` pulls up to **4 recent quarters** per ticker from EarningsCall and analyzes the **newest** call only. Read-only earnings tools then search across all stored calls (quote search works on raw transcripts; timeline needs analyzed calls).
+
+| Tool | Reads DB | Writes / fetches |
+|------|----------|------------------|
+| All earnings tools below | Yes | No |
+| Orchestrator `ensure_transcripts_for_ticker` | — | Yes (EarningsCall + optional analysis) |
 
 ---
 
