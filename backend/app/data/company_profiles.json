@@ -78,5 +78,13 @@
     "primary_functions": ["bsa_aml", "fair_lending", "consumer_complaints", "privacy"],
     "gics_sector": "Financials",
     "gics_sub_industry": "Consumer Finance"
+  },
+  "HBAN": {
+    "name": "Huntington Bancshares",
+    "institution_types": ["commercial_bank"],
+    "primary_products": ["mortgage_lending", "credit_cards", "deposit_accounts", "commercial_lending"],
+    "primary_functions": ["bsa_aml", "fair_lending", "capital_requirements"],
+    "gics_sector": "Financials",
+    "gics_sub_industry": "Regional Banks"
   }
 }
