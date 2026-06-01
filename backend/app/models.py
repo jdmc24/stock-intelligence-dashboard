@@ -23,7 +23,7 @@ class Transcript(Base):
     company_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
     quarter: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     call_date: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
-    source: Mapped[str] = mapped_column(String(16))  # earningscall | upload
+    source: Mapped[str] = mapped_column(String(16))  # earningscall | edgar | upload
     source_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
 
     raw_text: Mapped[str] = mapped_column(Text)

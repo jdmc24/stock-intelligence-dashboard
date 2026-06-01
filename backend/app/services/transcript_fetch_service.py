@@ -15,10 +15,15 @@ from app.services.earningscall_client import (
     fetch_transcript as earningscall_fetch_transcript,
     normalize_earnings_ticker,
 )
+from app.services.edgar_client import EdgarClient, EdgarError
+from app.services.sec_ticker_registry import search_sec_companies
 from app.services.transcript_parser import parse_sections
 from app.settings import settings
 
 logger = logging.getLogger(__name__)
+
+class TranscriptFetchError(RuntimeError):
+    """Neither EarningsCall nor SEC EDGAR returned a usable transcript."""
 
 _USABLE_STATUSES = frozenset({"raw", "analyzed"})
 
@@ -30,6 +35,91 @@ ASK_EARNINGS_QUARTER_LOOKBACK = 20
 
 def _quarter_label(year: int, quarter: int) -> str:
     return f"Q{quarter}-{year}"
+
+
+def ask_prefetch_targets(question: str) -> tuple[int, int]:
+    """Use a lighter fetch target when the user only needs the latest call(s)."""
+    q = (question or "").lower()
+    if any(
+        hint in q
+        for hint in (
+            "latest",
+            "most recent",
+            "last quarter",
+            "recent quarter",
+            "compare",
+            "comparison",
+            "versus",
+            " vs ",
+        )
+    ):
+        return 1, 2
+    return ASK_EARNINGS_MIN_TRANSCRIPTS, ASK_EARNINGS_MAX_FETCH_PER_RUN
+
+
+async def _company_name_for_ticker(ticker: str) -> str | None:
+    hits = await search_sec_companies(ticker, limit=1)
+    if not hits:
+        return None
+    name = hits[0].get("company_name")
+    return str(name) if name else None
+
+
+async def _fetch_from_edgar(
+    ticker: str,
+    quarter_label: str | None = None,
+) -> tuple[str, str | None, str | None, list[dict] | None, str | None]:
+    t_up = normalize_earnings_ticker(ticker)
+    client = EdgarClient()
+    try:
+        text, source_url = await client.fetch_best_transcript_text(t_up, quarter_label)
+    finally:
+        await client.aclose()
+
+    company_name = await _company_name_for_ticker(t_up)
+    resolved_quarter = quarter_label or _quarter_label(
+        dt.date.today().year,
+        (dt.date.today().month - 1) // 3 + 1,
+    )
+    return text, company_name, source_url, None, resolved_quarter
+
+
+async def _persist_transcript(
+    session: AsyncSession,
+    *,
+    ticker: str,
+    source: str,
+    text: str,
+    company_name: str | None,
+    source_url: str | None,
+    speaker_segments: list[dict] | None,
+    quarter_label: str | None,
+) -> Transcript:
+    t_up = normalize_earnings_ticker(ticker)
+    transcript = Transcript(
+        ticker=t_up,
+        quarter=quarter_label,
+        company_name=company_name,
+        source=source,
+        source_url=source_url,
+        raw_text=text,
+        status="raw",
+        processed_at=dt.datetime.now(dt.UTC),
+    )
+    session.add(transcript)
+    await session.flush()
+    await apply_fetch_result(
+        session,
+        transcript,
+        text=text,
+        company_name=company_name,
+        source_url=source_url,
+        speaker_segments=speaker_segments,
+        quarter_label=quarter_label,
+    )
+    await session.commit()
+    await session.refresh(transcript)
+    return transcript
 
 
 def _sections_from_speaker_segments(speaker_segments: list[dict] | None, text: str) -> list[dict[str, Any]]:
@@ -117,41 +207,66 @@ async def fetch_transcript_into_db(
     session: AsyncSession,
     ticker: str,
     quarter: str | None = None,
+    *,
+    earningscall_only: bool = False,
 ) -> Transcript:
-    """Fetch one earnings call from EarningsCall and persist transcript + sections."""
+    """Fetch one earnings call, preferring EarningsCall then SEC EDGAR."""
     t_up = normalize_earnings_ticker(ticker)
     if not t_up:
-        raise EarningsCallError("empty ticker")
+        raise TranscriptFetchError("empty ticker")
 
-    text, company_name, source_url, speaker_segments, resolved_quarter = await earningscall_fetch_transcript(
-        ticker=t_up,
-        quarter_label=quarter.strip() if quarter else None,
-    )
+    quarter_label = quarter.strip() if quarter else None
+    errors: list[str] = []
 
-    transcript = Transcript(
-        ticker=t_up,
-        quarter=resolved_quarter or (quarter.strip() if quarter else None),
-        company_name=company_name,
-        source="earningscall",
-        source_url=source_url,
-        raw_text=text,
-        status="raw",
-        processed_at=dt.datetime.now(dt.UTC),
+    if settings.earningcall_api_key:
+        try:
+            text, company_name, source_url, speaker_segments, resolved_quarter = await earningscall_fetch_transcript(
+                ticker=t_up,
+                quarter_label=quarter_label,
+            )
+            return await _persist_transcript(
+                session,
+                ticker=t_up,
+                source="earningscall",
+                text=text,
+                company_name=company_name,
+                source_url=source_url,
+                speaker_segments=speaker_segments,
+                quarter_label=resolved_quarter or quarter_label,
+            )
+        except EarningsCallError as e:
+            errors.append(f"EarningsCall: {e}")
+            logger.info("EarningsCall fetch failed for %s: %s", t_up, e)
+    else:
+        errors.append("EarningsCall: EARNINGSCALL_API_KEY not set")
+
+    if earningscall_only:
+        raise TranscriptFetchError(
+            f"Could not fetch {t_up} earnings transcript. " + " ".join(errors)
+        )
+
+    try:
+        text, company_name, source_url, speaker_segments, resolved_quarter = await _fetch_from_edgar(
+            t_up,
+            quarter_label,
+        )
+        return await _persist_transcript(
+            session,
+            ticker=t_up,
+            source="edgar",
+            text=text,
+            company_name=company_name,
+            source_url=source_url,
+            speaker_segments=speaker_segments,
+            quarter_label=resolved_quarter or quarter_label,
+        )
+    except EdgarError as e:
+        errors.append(f"SEC EDGAR: {e}")
+        logger.info("EDGAR fetch failed for %s: %s", t_up, e)
+
+    raise TranscriptFetchError(
+        f"Could not fetch {t_up} earnings transcript. " + " ".join(errors)
     )
-    session.add(transcript)
-    await session.flush()
-    await apply_fetch_result(
-        session,
-        transcript,
-        text=text,
-        company_name=company_name,
-        source_url=source_url,
-        speaker_segments=speaker_segments,
-        quarter_label=resolved_quarter,
-    )
-    await session.commit()
-    await session.refresh(transcript)
-    return transcript
 
 
 async def fetch_next_missing_quarter(
@@ -171,10 +286,10 @@ async def fetch_next_missing_quarter(
         if label in have:
             continue
         try:
-            tr = await fetch_transcript_into_db(session, t_up, quarter=label)
+            tr = await fetch_transcript_into_db(session, t_up, quarter=label, earningscall_only=True)
             have.add(label)
             return tr
-        except EarningsCallError as e:
+        except (EarningsCallError, TranscriptFetchError) as e:
             logger.info("no transcript for %s %s: %s", t_up, label, e)
             continue
     return None
@@ -213,8 +328,8 @@ async def ensure_transcripts_for_ticker(
 ) -> tuple[list[Transcript], list[str]]:
     """Ensure stored transcripts exist for Ask / earnings tools.
 
-    Pulls up to `max_fetch` missing recent quarters from EarningsCall when below
-    `min_count`. Runs AI analysis on the newest call only (quote search works on all raw calls).
+    Pulls missing recent quarters from EarningsCall when configured, then falls back to
+    SEC EDGAR (latest 8-K exhibit) when needed. Runs AI analysis on the newest call only.
     """
     notes: list[str] = []
     t_up = normalize_earnings_ticker(ticker)
@@ -228,16 +343,34 @@ async def ensure_transcripts_for_ticker(
     fetched: list[Transcript] = []
 
     attempts = 0
-    while await _usable_transcript_count(session, t_up) < target and attempts < cap:
-        tr = await fetch_next_missing_quarter(session, t_up, stored_labels=stored)
-        if tr is None:
-            break
-        fetched.append(tr)
-        attempts += 1
-        q_label = tr.quarter or "latest quarter"
-        notes.append(f"Fetched {t_up} {q_label} earnings transcript from EarningsCall.")
-        if tr.quarter:
-            stored.add(tr.quarter)
+    if settings.earningcall_api_key and target > 1:
+        while await _usable_transcript_count(session, t_up) < target and attempts < cap:
+            tr = await fetch_next_missing_quarter(session, t_up, stored_labels=stored)
+            if tr is None:
+                break
+            fetched.append(tr)
+            attempts += 1
+            q_label = tr.quarter or "latest quarter"
+            source_label = "EarningsCall" if tr.source == "earningscall" else "SEC EDGAR"
+            notes.append(f"Fetched {t_up} {q_label} earnings transcript from {source_label}.")
+            if tr.quarter:
+                stored.add(tr.quarter)
+    elif not settings.earningcall_api_key and target > 1:
+        notes.append(
+            f"{t_up}: EARNINGSCALL_API_KEY not set — skipping multi-quarter backfill; will try SEC EDGAR for the latest call."
+        )
+
+    if await _usable_transcript_count(session, t_up) < max(1, min(target, 1)):
+        try:
+            tr = await fetch_transcript_into_db(session, t_up)
+            if tr not in fetched:
+                fetched.append(tr)
+            q_label = tr.quarter or "latest quarter"
+            source_label = "EarningsCall" if tr.source == "earningscall" else "SEC EDGAR"
+            notes.append(f"Fetched {t_up} {q_label} earnings transcript from {source_label}.")
+        except TranscriptFetchError as e:
+            notes.append(f"Could not fetch {t_up} earnings transcript: {e}")
+            return [], notes
 
     res = await session.execute(
         select(Transcript)
@@ -259,14 +392,8 @@ async def ensure_transcripts_for_ticker(
         notes.append(f"{t_up}: {len(transcripts)} earnings call(s) available for Ask ({quarters}{suffix}).")
 
     if not fetched and not transcripts:
-        try:
-            tr = await fetch_transcript_into_db(session, t_up)
-            transcripts = [tr]
-            q_label = tr.quarter or "latest quarter"
-            notes.append(f"Fetched {t_up} {q_label} earnings transcript from EarningsCall.")
-        except EarningsCallError as e:
-            notes.append(f"Could not fetch {t_up} earnings transcript: {e}")
-            return [], notes
+        notes.append(f"No earnings transcripts available for {t_up} from EarningsCall or SEC EDGAR.")
+        return [], notes
 
     if run_analysis and settings.anthropic_api_key and transcripts:
         notes.append("Analyzing the most recent call — this may take a moment…")

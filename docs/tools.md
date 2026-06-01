@@ -51,7 +51,7 @@ Requires **enriched** documents for severity and institution filters. Empty resu
 | `search_transcripts` | Full-text keyword search in transcript bodies | `company`, `q` / `topic`, `limit` | Returns snippets |
 | `company_earnings_timeline` | Per-quarter tone, hedging, topics for analyzed calls | `ticker` | Needs analyzed transcripts |
 
-**Auto-fetch (orchestrator, not an LLM tool):** Before the earnings agent runs, `ensure_transcripts_for_ticker()` pulls up to **16 recent quarters** per ticker from EarningsCall and analyzes the **newest** call only. Read-only earnings tools then search across all stored calls (quote search works on raw transcripts; timeline needs analyzed calls).
+**Auto-fetch (orchestrator, not an LLM tool):** Before the earnings agent runs, `ensure_transcripts_for_ticker()` tries **EarningsCall** when `EARNINGSCALL_API_KEY` is set, then falls back to **SEC EDGAR** (latest earnings transcript from recent 8-K exhibits). Compare/latest questions prefetch one call per ticker; broader history questions prefetch up to 16 quarters when the paid API is available.
 
 | Tool | Reads DB | Writes / fetches |
 |------|----------|------------------|
