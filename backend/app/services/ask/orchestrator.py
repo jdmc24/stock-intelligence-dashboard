@@ -12,7 +12,7 @@ from app.services.ask.earnings_agent import run_earnings_agent
 from app.services.ask.events import AskEventEmitter
 from app.services.ask.regulations_agent import run_regulations_agent
 from app.services.company_profile_service import ensure_company_reg_profile
-from app.services.ticker_resolution import resolve_tickers_for_question
+from app.services.ticker_resolution import extract_explicit_tickers, resolve_tickers_for_question
 from app.services.transcript_fetch_service import ask_prefetch_targets, ensure_transcripts_for_ticker
 from app.services.llm.anthropic_client import complete_json_with_usage
 from app.services.regulations_service import get_document
@@ -49,56 +49,6 @@ _EARNINGS_HINTS = (
     "say about",
 )
 
-_TICKER_STOP = frozenset(
-    {
-        "A",
-        "I",
-        "AI",
-        "AN",
-        "AND",
-        "ARE",
-        "FOR",
-        "HOW",
-        "ITS",
-        "LLC",
-        "NEW",
-        "NOT",
-        "SEC",
-        "THE",
-        "THIS",
-        "THAT",
-        "WHAT",
-        "WHEN",
-        "WHO",
-        "WHY",
-        "WILL",
-        "WITH",
-        "FROM",
-        "THAN",
-        "THAT",
-        "THEY",
-        "THEM",
-        "US",
-        "UK",
-        "EU",
-        "FR",
-        "IT",
-        "OR",
-        "ON",
-        "IN",
-        "AT",
-        "TO",
-        "OF",
-        "BY",
-        "AS",
-        "IF",
-        "BE",
-        "IS",
-        "AM",
-        "PM",
-    }
-)
-
 
 def parse_intent(question: str, context: dict[str, Any] | None) -> dict[str, Any]:
     ctx = context or {}
@@ -109,10 +59,17 @@ def parse_intent(question: str, context: dict[str, Any] | None) -> dict[str, Any
     if ctx.get("ticker"):
         tickers.append(str(ctx["ticker"]).strip().upper())
 
-    for m in re.finditer(r"\b([A-Z]{2,5})\b", q):
-        sym = m.group(1).upper()
-        if sym not in _TICKER_STOP and sym not in tickers:
-            tickers.append(sym)
+    tickers.extend(extract_explicit_tickers(q, tickers))
+    # Preserve order while deduplicating.
+    seen: set[str] = set()
+    unique: list[str] = []
+    for sym in tickers:
+        up = sym.strip().upper()
+        if not up or up in seen:
+            continue
+        seen.add(up)
+        unique.append(up)
+    tickers = unique[:5]
 
     needs_earnings = any(h in q_lower for h in _EARNINGS_HINTS)
 
@@ -244,10 +201,16 @@ async def run_ask(
     if run_earnings:
         min_count, max_fetch = ask_prefetch_targets(q)
         prefetch_notes: list[str] = []
-        for tk in intent.get("tickers") or []:
+        prefetched: set[str] = set()
+
+        async def _prefetch_ticker(tk: str) -> None:
+            t_up = str(tk).strip().upper()
+            if not t_up or t_up in prefetched:
+                return
+            prefetched.add(t_up)
             _transcripts, fetch_notes = await ensure_transcripts_for_ticker(
                 session,
-                str(tk),
+                t_up,
                 min_count=min_count,
                 max_fetch=max_fetch,
                 run_analysis=True,
@@ -256,6 +219,10 @@ async def run_ask(
             for note in fetch_notes:
                 level = "warn" if note.startswith("Could not fetch") or note.startswith("No earnings") else "info"
                 await emit(emitter.next("message", level=level, text=note))
+
+        for tk in intent.get("tickers") or []:
+            await _prefetch_ticker(str(tk))
+
         if run_earnings and not intent.get("tickers"):
             prefetch_notes.append(
                 "No ticker resolved from the company name — transcript prefetch was skipped. "
@@ -263,6 +230,7 @@ async def run_ask(
             )
             await emit(emitter.next("message", level="warn", text=prefetch_notes[-1]))
         intent["prefetch_notes"] = prefetch_notes
+        intent["_prefetched_tickers"] = sorted(prefetched)
 
     await emit(emitter.next("agent_end", agent="orchestrator", status="ok", summary="Plan ready"))
 
@@ -287,6 +255,46 @@ async def run_ask(
             summary=(reg_brief.get("research_summary") or "Regulations research complete.")[:240],
         )
     )
+
+    if run_earnings:
+        merged_tickers = list(intent.get("tickers") or [])
+        seen_tickers = set(str(t).upper() for t in merged_tickers)
+        for tk in reg_brief.get("tickers") or []:
+            t_up = str(tk or "").strip().upper()
+            if t_up and t_up not in seen_tickers:
+                seen_tickers.add(t_up)
+                merged_tickers.append(t_up)
+        new_for_prefetch = [
+            t
+            for t in merged_tickers
+            if t not in set(intent.get("_prefetched_tickers") or [])
+        ]
+        if new_for_prefetch:
+            min_count, max_fetch = ask_prefetch_targets(q)
+            for tk in new_for_prefetch:
+                _transcripts, fetch_notes = await ensure_transcripts_for_ticker(
+                    session,
+                    tk,
+                    min_count=min_count,
+                    max_fetch=max_fetch,
+                    run_analysis=True,
+                )
+                intent.setdefault("prefetch_notes", []).extend(fetch_notes)
+                for note in fetch_notes:
+                    level = "warn" if note.startswith("Could not fetch") or note.startswith("No earnings") else "info"
+                    await emit(emitter.next("message", level=level, text=note))
+                prefetched = set(intent.get("_prefetched_tickers") or [])
+                prefetched.add(tk)
+                intent["_prefetched_tickers"] = sorted(prefetched)
+            intent["tickers"] = merged_tickers[:5]
+            for tk in new_for_prefetch:
+                await emit(
+                    emitter.next(
+                        "message",
+                        level="info",
+                        text=f"Late prefetch for {tk} after regulations agent resolved ticker.",
+                    )
+                )
 
     if run_earnings:
         await emit(emitter.next("agent_start", agent="earnings", label="Earnings research"))
