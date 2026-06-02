@@ -95,6 +95,9 @@ Return JSON:
     {"kind": "transcript", "id": "uuid", "label": "MSFT Q1 call", "href": "/transcripts/{id}"},
     {"kind": "analysis", "id": "uuid", "label": "MSFT Q1 analysis", "href": "/analysis/{id}"}
   ],
-  "limitations": ["optional strings"]
+  "limitations": ["optional strings"],
+  "follow_up_questions": [
+    "2-3 short natural-language questions the user might ask next, grounded in tickers/topics from the briefs"
+  ]
 }
 """

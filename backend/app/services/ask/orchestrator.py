@@ -356,7 +356,12 @@ async def _synthesize(
         for note in intent.get("prefetch_notes") or []:
             if note.startswith("Could not fetch") or note.startswith("No earnings") or "skipped" in note.lower():
                 limitations.append(note)
-        return {"markdown": md, "citations": citations, "limitations": limitations}, 0, 0
+        return {
+            "markdown": md,
+            "citations": citations,
+            "limitations": limitations,
+            "follow_up_questions": suggest_follow_up_questions(question, intent, reg_brief, earn_brief),
+        }, 0, 0
 
     user_parts = [
         f"User question:\n{question}\n",
@@ -390,7 +395,12 @@ async def _synthesize(
             if note.startswith("Could not fetch") or note.startswith("No earnings") or "skipped" in note.lower():
                 limitations.append(note)
         limitations.append("Answer synthesized from research briefs after JSON parse failure.")
-        return {"markdown": md, "citations": citations, "limitations": limitations}, 0, 0
+        return {
+            "markdown": md,
+            "citations": citations,
+            "limitations": limitations,
+            "follow_up_questions": suggest_follow_up_questions(question, intent, reg_brief, earn_brief),
+        }, 0, 0
 
     citations = (
         parsed.get("citations")
@@ -402,11 +412,102 @@ async def _synthesize(
         if note.startswith("Could not fetch") or note.startswith("No earnings") or "skipped" in note.lower():
             if note not in limitations:
                 limitations.append(note)
+    follow_ups = _normalize_follow_up_questions(parsed.get("follow_up_questions"))
+    if not follow_ups:
+        follow_ups = suggest_follow_up_questions(question, intent, reg_brief, earn_brief)
     return {
         "markdown": str(parsed.get("markdown") or ""),
         "citations": citations,
         "limitations": limitations,
+        "follow_up_questions": follow_ups,
     }, in_t, out_t
+
+
+def _normalize_follow_up_questions(raw: Any) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        q = item.strip()
+        key = q.lower()
+        if len(q) < 12 or key in seen:
+            continue
+        seen.add(key)
+        out.append(q)
+        if len(out) >= 3:
+            break
+    return out
+
+
+def suggest_follow_up_questions(
+    question: str,
+    intent: dict[str, Any],
+    reg_brief: dict[str, Any],
+    earn_brief: dict[str, Any] | None,
+) -> list[str]:
+    """Deterministic follow-ups when the synthesizer omits them."""
+    tickers: list[str] = []
+    seen: set[str] = set()
+    for source in (intent.get("tickers") or [], reg_brief.get("tickers") or []):
+        for tk in source:
+            t = str(tk or "").strip().upper()
+            if t and t not in seen:
+                seen.add(t)
+                tickers.append(t)
+    if earn_brief:
+        for tk in earn_brief.get("tickers") or []:
+            t = str(tk or "").strip().upper()
+            if t and t not in seen:
+                seen.add(t)
+                tickers.append(t)
+
+    primary = tickers[0] if tickers else None
+    topics = [str(t) for t in (intent.get("topics") or reg_brief.get("topics") or []) if str(t).strip()]
+    topic = topics[0] if topics else "AI"
+    q_lower = (question or "").lower()
+    had_earnings = bool(intent.get("needs_earnings") or earn_brief)
+    had_regs = bool(reg_brief.get("key_documents"))
+
+    suggestions: list[str] = []
+    if primary and had_earnings and "ai" not in q_lower and topic.lower() != "ai":
+        suggestions.append(
+            f"What did management say about AI on {primary}'s most recent earnings call?"
+        )
+    elif primary and had_earnings:
+        suggestions.append(
+            f"How has {primary}'s guidance and tone changed over the last few earnings calls?"
+        )
+
+    if primary and had_regs:
+        suggestions.append(
+            f"What recent regulations are relevant for an investor considering {primary}?"
+        )
+    elif primary:
+        suggestions.append(
+            f"What Federal Register rules from the last 90 days might affect {primary}?"
+        )
+
+    if primary and had_earnings and had_regs and len(suggestions) < 3:
+        suggestions.append(
+            f"How might recent banking regulations intersect with themes {primary} raised on its latest call?"
+        )
+    elif primary and len(suggestions) < 3:
+        suggestions.append(f"Compare {primary}'s latest earnings narrative to its regulatory exposure profile.")
+
+    out: list[str] = []
+    seen_q: set[str] = set()
+    for s in suggestions:
+        key = s.lower()
+        if key in seen_q or key == q_lower.strip():
+            continue
+        seen_q.add(key)
+        out.append(s)
+        if len(out) >= 3:
+            break
+    return out
 
 
 def _compact_brief(brief: dict[str, Any]) -> dict[str, Any]:

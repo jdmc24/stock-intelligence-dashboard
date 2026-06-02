@@ -28,6 +28,7 @@ type ChatMessage = {
   text: string;
   citations?: AskCitation[];
   limitations?: string[];
+  followUpQuestions?: string[];
 };
 
 type AskWorkspaceProps = {
@@ -49,6 +50,63 @@ function ContextBanner({ context }: { context: AskContext }) {
       <Link href="/" className="ml-2 text-teal-700 underline dark:text-teal-300">
         Clear
       </Link>
+    </div>
+  );
+}
+
+function FollowUpSuggestions({
+  questions,
+  disabled,
+  onSelect,
+}: {
+  questions: string[];
+  disabled: boolean;
+  onSelect: (question: string) => void;
+}) {
+  if (!questions.length) return null;
+  return (
+    <div className="mt-3 space-y-2 border-t border-zinc-300/50 pt-3 dark:border-zinc-700">
+      <p className="text-xs font-medium text-zinc-500 dark:text-zinc-400">Suggested follow-ups</p>
+      <div className="flex flex-col gap-2">
+        {questions.map((q) => (
+          <button
+            key={q}
+            type="button"
+            disabled={disabled}
+            onClick={() => onSelect(q)}
+            className="rounded-xl border border-zinc-200/90 px-3 py-2 text-left text-xs text-zinc-700 transition hover:border-teal-500/40 hover:bg-teal-50/50 disabled:opacity-50 dark:border-zinc-800 dark:text-zinc-300 dark:hover:border-teal-500/30 dark:hover:bg-teal-950/20"
+          >
+            {q}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ExamplePrompts({
+  disabled,
+  onSelect,
+}: {
+  disabled: boolean;
+  onSelect: (question: string) => void;
+}) {
+  return (
+    <div className="space-y-3">
+      <p className="text-sm text-zinc-500">Try an example:</p>
+      <div className="flex flex-col gap-2">
+        {ASK_EXAMPLE_PROMPTS.map((ex) => (
+          <button
+            key={ex}
+            type="button"
+            disabled={disabled}
+            onClick={() => onSelect(ex)}
+            className="rounded-xl border border-zinc-200/90 px-3 py-2.5 text-left text-sm text-zinc-700 transition hover:border-teal-500/40 hover:bg-teal-50/50 disabled:opacity-50 dark:border-zinc-800 dark:text-zinc-300 dark:hover:border-teal-500/30 dark:hover:bg-teal-950/20"
+          >
+            {ex}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
@@ -95,6 +153,7 @@ export function AskWorkspace({
             if (ev.type === "answer") {
               const citations = (ev.citations as AskCitation[] | undefined) ?? [];
               const limitations = (ev.limitations as string[] | undefined) ?? [];
+              const followUpQuestions = (ev.follow_up_questions as string[] | undefined) ?? [];
               setMessages((prev) => [
                 ...prev,
                 {
@@ -103,6 +162,7 @@ export function AskWorkspace({
                   text: String(ev.markdown ?? ""),
                   citations,
                   limitations,
+                  followUpQuestions,
                 },
               ]);
             }
@@ -155,22 +215,7 @@ export function AskWorkspace({
         ) : null}
         <div className="flex-1 space-y-4 overflow-y-auto p-4 sm:p-5">
           {messages.length === 0 && !hideExamples ? (
-            <div className="space-y-3">
-              <p className="text-sm text-zinc-500">Try an example:</p>
-              <div className="flex flex-col gap-2">
-                {ASK_EXAMPLE_PROMPTS.map((ex) => (
-                  <button
-                    key={ex}
-                    type="button"
-                    disabled={running}
-                    onClick={() => runQuestion(ex)}
-                    className="rounded-xl border border-zinc-200/90 px-3 py-2.5 text-left text-sm text-zinc-700 transition hover:border-teal-500/40 hover:bg-teal-50/50 disabled:opacity-50 dark:border-zinc-800 dark:text-zinc-300 dark:hover:border-teal-500/30 dark:hover:bg-teal-950/20"
-                  >
-                    {ex}
-                  </button>
-                ))}
-              </div>
-            </div>
+            <ExamplePrompts disabled={running} onSelect={(q) => void runQuestion(q)} />
           ) : null}
           {messages.map((m) => (
             <div
@@ -193,6 +238,13 @@ export function AskWorkspace({
                     <li key={lim}>• {lim}</li>
                   ))}
                 </ul>
+              ) : null}
+              {m.role === "assistant" && m.followUpQuestions?.length ? (
+                <FollowUpSuggestions
+                  questions={m.followUpQuestions}
+                  disabled={running}
+                  onSelect={(q) => void runQuestion(q)}
+                />
               ) : null}
             </div>
           ))}
