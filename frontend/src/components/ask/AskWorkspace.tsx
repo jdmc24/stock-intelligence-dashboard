@@ -206,8 +206,8 @@ export function AskWorkspace({
   const hideExamples = !showExamples || Boolean(context?.ticker || context?.regulation_id);
 
   return (
-    <div className="ask-workspace-grid gap-6 lg:gap-6 xl:gap-8">
-      <section className="ask-pane surface-card flex min-h-[420px] flex-col lg:min-h-0">
+    <div className="grid min-h-[min(72vh,640px)] gap-6 lg:grid-cols-2 lg:gap-8">
+      <section className="flex min-h-[420px] flex-col rounded-xl border border-zinc-200/90 bg-white/60 dark:border-zinc-800 dark:bg-zinc-950/30">
         {context && (context.ticker || context.regulation_id) ? (
           <div className="border-b border-zinc-200/80 px-4 pt-4 dark:border-zinc-800">
             <ContextBanner context={context} />
@@ -276,9 +276,7 @@ export function AskWorkspace({
         </form>
       </section>
 
-      <div className="ask-pane min-h-[420px] lg:min-h-0">
-        <OrchestratorTracePanel events={events} running={running} />
-      </div>
+      <OrchestratorTracePanel events={events} running={running} />
     </div>
   );
 }
