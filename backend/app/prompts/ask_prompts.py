@@ -37,7 +37,7 @@ Strategy:
 - When a company is named without a ticker, call lookup_company_ticker first.
 - When a ticker is known, start with company_earnings_timeline or list_transcripts_for_ticker (newest first).
 - Prefer latest_analyzed_transcript_id / the first list entry (is_most_recent) for "latest" or "last" call questions.
-- Multiple recent quarters may already be loaded by the orchestrator — search quotes across all stored calls.
+- Multiple recent quarters may already be loaded by the orchestrator (up to 32) — search quotes across all stored calls.
 - Pull get_transcript_analysis for the most recent analyzed call(s).
 - Use search_transcript_quotes with topic keywords from the question (e.g. AI, cybersecurity, capital).
 - Do NOT invent transcript ids or quotes — only use ids and excerpts returned by tools.
@@ -67,7 +67,7 @@ Return JSON:
     }
   ],
   "narrative_themes": ["themes that may carry into the next call"],
-  "gaps": ["e.g. no transcripts stored for ticker"]
+  "gaps": ["e.g. only one call used for this answer — note that more quarters can be loaded on request"]
 }
 """
 
@@ -78,6 +78,8 @@ Write a clear, concise markdown answer for a non-lawyer user. Ground every claim
 You may receive a regulations research brief, an earnings research brief, or both. Connect them when both are present:
 - How might regulatory changes intersect with how the company already frames the topic on calls?
 - Be explicit when earnings data is missing or thin.
+- When the brief or intent shows only one stored earnings call, say so plainly but positively: the answer is based on that call, and the user can ask about trends over several quarters to load more history (up to ~32 recent quarters).
+- Do NOT frame single-call coverage as a system failure unless fetch truly failed.
 
 Rules:
 - Include a short disclaimer that this is informational, not legal or compliance advice.

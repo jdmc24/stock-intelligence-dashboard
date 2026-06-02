@@ -13,7 +13,11 @@ from app.services.ask.events import AskEventEmitter
 from app.services.ask.regulations_agent import run_regulations_agent
 from app.services.company_profile_service import ensure_company_reg_profile
 from app.services.ticker_resolution import extract_explicit_tickers, resolve_tickers_for_question
-from app.services.transcript_fetch_service import ask_prefetch_targets, ensure_transcripts_for_ticker
+from app.services.transcript_fetch_service import (
+    ASK_EARNINGS_STORED_TARGET,
+    ask_prefetch_targets,
+    ensure_transcripts_for_ticker,
+)
 from app.services.llm.anthropic_client import complete_json_with_usage
 from app.services.regulations_service import get_document
 from app.settings import settings
@@ -232,7 +236,7 @@ async def run_ask(
             if not t_up or t_up in prefetched:
                 return
             prefetched.add(t_up)
-            _transcripts, fetch_notes = await ensure_transcripts_for_ticker(
+            transcripts, fetch_notes = await ensure_transcripts_for_ticker(
                 session,
                 t_up,
                 min_count=min_count,
@@ -240,6 +244,13 @@ async def run_ask(
                 run_analysis=True,
             )
             prefetch_notes.extend(fetch_notes)
+            coverage = intent.setdefault("earnings_coverage", {})
+            coverage[t_up] = {
+                "stored": len(transcripts),
+                "target_this_run": min_count,
+                "stored_goal": ASK_EARNINGS_STORED_TARGET,
+                "newest_quarter": transcripts[0].quarter if transcripts else None,
+            }
             for note in fetch_notes:
                 level = "warn" if note.startswith("Could not fetch") or note.startswith("No earnings") else "info"
                 await emit(emitter.next("message", level=level, text=note))
@@ -304,6 +315,13 @@ async def run_ask(
                     run_analysis=True,
                 )
                 intent.setdefault("prefetch_notes", []).extend(fetch_notes)
+                coverage = intent.setdefault("earnings_coverage", {})
+                coverage[tk] = {
+                    "stored": len(_transcripts),
+                    "target_this_run": min_count,
+                    "stored_goal": ASK_EARNINGS_STORED_TARGET,
+                    "newest_quarter": _transcripts[0].quarter if _transcripts else None,
+                }
                 for note in fetch_notes:
                     level = "warn" if note.startswith("Could not fetch") or note.startswith("No earnings") else "info"
                     await emit(emitter.next("message", level=level, text=note))
@@ -380,6 +398,7 @@ async def _synthesize(
         for note in intent.get("prefetch_notes") or []:
             if note.startswith("Could not fetch") or note.startswith("No earnings") or "skipped" in note.lower():
                 limitations.append(note)
+        limitations.extend(_earnings_scope_limitations(intent, earn_brief))
         return {
             "markdown": md,
             "citations": citations,
@@ -418,6 +437,7 @@ async def _synthesize(
         for note in intent.get("prefetch_notes") or []:
             if note.startswith("Could not fetch") or note.startswith("No earnings") or "skipped" in note.lower():
                 limitations.append(note)
+        limitations.extend(_earnings_scope_limitations(intent, earn_brief))
         limitations.append("Answer synthesized from research briefs after JSON parse failure.")
         return {
             "markdown": md,
@@ -436,6 +456,9 @@ async def _synthesize(
         if note.startswith("Could not fetch") or note.startswith("No earnings") or "skipped" in note.lower():
             if note not in limitations:
                 limitations.append(note)
+    for scope_note in _earnings_scope_limitations(intent, earn_brief):
+        if scope_note not in limitations:
+            limitations.append(scope_note)
     follow_ups = _normalize_follow_up_questions(parsed.get("follow_up_questions"))
     if not follow_ups:
         follow_ups = suggest_follow_up_questions(question, intent, reg_brief, earn_brief)
@@ -445,6 +468,38 @@ async def _synthesize(
         "limitations": limitations,
         "follow_up_questions": follow_ups,
     }, in_t, out_t
+
+
+def _earnings_scope_limitations(intent: dict[str, Any], earn_brief: dict[str, Any] | None) -> list[str]:
+    """User-friendly scope notes when earnings coverage is thin — not dead ends."""
+    if not earn_brief and not intent.get("needs_earnings"):
+        return []
+    coverage = intent.get("earnings_coverage")
+    if not isinstance(coverage, dict) or not coverage:
+        return []
+
+    out: list[str] = []
+    for ticker, info in coverage.items():
+        if not isinstance(info, dict):
+            continue
+        t_up = str(ticker).strip().upper()
+        stored = int(info.get("stored") or 0)
+        goal = int(info.get("stored_goal") or ASK_EARNINGS_STORED_TARGET)
+        newest = info.get("newest_quarter")
+        if stored <= 0:
+            continue
+        q_part = f" ({newest})" if newest else ""
+        if stored == 1:
+            out.append(
+                f"This answer is based on one earnings call{q_part} for {t_up}. "
+                f"Ask can load up to {goal} recent quarters — try asking how a topic evolved over the last several calls."
+            )
+        elif stored < goal:
+            out.append(
+                f"Earnings context for {t_up} uses {stored} stored call(s) so far "
+                f"(up to {goal} can be loaded with continued Ask questions)."
+            )
+    return out
 
 
 def _normalize_follow_up_questions(raw: Any) -> list[str]:
@@ -489,6 +544,11 @@ def suggest_follow_up_questions(
                 tickers.append(t)
 
     primary = tickers[0] if tickers else None
+    coverage = intent.get("earnings_coverage") if isinstance(intent.get("earnings_coverage"), dict) else {}
+    primary_stored = 0
+    if primary and primary in coverage and isinstance(coverage[primary], dict):
+        primary_stored = int(coverage[primary].get("stored") or 0)
+
     topics = [str(t) for t in (intent.get("topics") or reg_brief.get("topics") or []) if str(t).strip()]
     topic = topics[0] if topics else "AI"
     q_lower = (question or "").lower()
@@ -496,7 +556,11 @@ def suggest_follow_up_questions(
     had_regs = bool(reg_brief.get("key_documents"))
 
     suggestions: list[str] = []
-    if primary and had_earnings and "ai" not in q_lower and topic.lower() != "ai":
+    if primary and had_earnings and primary_stored <= 2:
+        suggestions.append(
+            f"How has {primary}'s tone and guidance changed over the last several earnings calls?"
+        )
+    elif primary and had_earnings and "ai" not in q_lower and topic.lower() != "ai":
         suggestions.append(
             f"What did management say about AI on {primary}'s most recent earnings call?"
         )

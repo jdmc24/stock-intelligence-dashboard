@@ -28,10 +28,16 @@ class TranscriptFetchError(RuntimeError):
 
 _USABLE_STATUSES = frozenset({"raw", "analyzed"})
 
-# Ask orchestrator: pre-load this many recent calls per ticker (not an LLM tool — runs before the agent).
-ASK_EARNINGS_MIN_TRANSCRIPTS = 16
-ASK_EARNINGS_MAX_FETCH_PER_RUN = 16
-ASK_EARNINGS_QUARTER_LOOKBACK = 20
+# Ask orchestrator transcript backfill (not an LLM tool — runs before the earnings agent).
+# STORED_TARGET: quarters we aim to keep per ticker (~8 years) for trend / quote search.
+# MAX_FETCH_PER_RUN: new EarningsCall fetches per Ask run (incremental backfill, keeps latency reasonable).
+# QUARTER_LOOKBACK: how far back to scan when hunting missing quarters.
+ASK_EARNINGS_STORED_TARGET = 32
+ASK_EARNINGS_MAX_FETCH_PER_RUN = 12
+ASK_EARNINGS_QUARTER_LOOKBACK = 40
+
+# Backward-compatible alias used in older references
+ASK_EARNINGS_MIN_TRANSCRIPTS = ASK_EARNINGS_STORED_TARGET
 
 
 def _quarter_label(year: int, quarter: int) -> str:
@@ -39,8 +45,29 @@ def _quarter_label(year: int, quarter: int) -> str:
 
 
 def ask_prefetch_targets(question: str) -> tuple[int, int]:
-    """Use a lighter fetch target when the user only needs the latest call(s)."""
+    """Return (stored_target, max_fetch) for this question.
+
+    stored_target is how many quarters we want on file for the ticker.
+    max_fetch caps new API pulls this run so Ask stays responsive while
+    backfilling toward the 32-quarter goal across repeated questions.
+    """
     q = (question or "").lower()
+    if any(
+        hint in q
+        for hint in (
+            "compare",
+            "comparison",
+            "versus",
+            " vs ",
+            "over time",
+            "over the last",
+            "several calls",
+            "multiple calls",
+            "history",
+            "trend",
+        )
+    ):
+        return ASK_EARNINGS_STORED_TARGET, ASK_EARNINGS_MAX_FETCH_PER_RUN
     if any(
         hint in q
         for hint in (
@@ -48,14 +75,13 @@ def ask_prefetch_targets(question: str) -> tuple[int, int]:
             "most recent",
             "last quarter",
             "recent quarter",
-            "compare",
-            "comparison",
-            "versus",
-            " vs ",
+            "last call",
+            "recent call",
         )
     ):
-        return 1, 2
-    return ASK_EARNINGS_MIN_TRANSCRIPTS, ASK_EARNINGS_MAX_FETCH_PER_RUN
+        # Focus on the newest call but still pull a little history when possible.
+        return 2, 6
+    return ASK_EARNINGS_STORED_TARGET, ASK_EARNINGS_MAX_FETCH_PER_RUN
 
 
 async def _company_name_for_ticker(ticker: str) -> str | None:
@@ -335,7 +361,7 @@ async def ensure_transcripts_for_ticker(
     session: AsyncSession,
     ticker: str,
     *,
-    min_count: int = ASK_EARNINGS_MIN_TRANSCRIPTS,
+    min_count: int = ASK_EARNINGS_STORED_TARGET,
     max_fetch: int = ASK_EARNINGS_MAX_FETCH_PER_RUN,
     run_analysis: bool = True,
 ) -> tuple[list[Transcript], list[str]]:
@@ -349,7 +375,7 @@ async def ensure_transcripts_for_ticker(
     if not t_up:
         return [], notes
 
-    max_quarters = ASK_EARNINGS_MIN_TRANSCRIPTS
+    max_quarters = ASK_EARNINGS_STORED_TARGET
     target = max(1, min(int(min_count), max_quarters))
     cap = max(1, min(int(max_fetch), max_quarters))
     stored = await _stored_quarter_labels(session, t_up)
@@ -393,6 +419,13 @@ async def ensure_transcripts_for_ticker(
         extra = len(transcripts) - len(shown)
         suffix = f", +{extra} more" if extra > 0 else ""
         notes.append(f"{t_up}: {len(transcripts)} earnings call(s) available for Ask ({quarters}{suffix}).")
+    elif len(transcripts) == 1:
+        q_label = transcripts[0].quarter or "latest quarter"
+        notes.append(
+            f"{t_up}: analysis can use {q_label} now. "
+            f"Ask can load up to {ASK_EARNINGS_STORED_TARGET} recent quarters — "
+            f"ask how a theme changed over several calls to pull more history."
+        )
 
     if not fetched and not transcripts:
         notes.append(f"No earnings transcripts available for {t_up} from EarningsCall or SEC EDGAR.")

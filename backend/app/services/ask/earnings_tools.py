@@ -24,7 +24,7 @@ ASK_EARNINGS_TOOLS: list[dict[str, Any]] = [
         "name": "list_transcripts_for_ticker",
         "description": (
             "List stored earnings call transcripts for a ticker, newest first. "
-            "The orchestrator pre-loads up to 16 recent quarters before you run; "
+            "The orchestrator pre-loads up to 32 recent quarters before you run; "
             "this tool only reads what is already in the database."
         ),
         "input_schema": {
