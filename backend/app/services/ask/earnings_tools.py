@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from typing import Any
 
@@ -66,7 +67,7 @@ ASK_EARNINGS_TOOLS: list[dict[str, Any]] = [
                 "query": {"type": "string", "description": "Phrase to search in section text."},
                 "company": {
                     "type": "string",
-                    "description": "Optional ticker filter.",
+                    "description": "Optional ticker or company name filter (e.g. HBAN or Huntington).",
                 },
             },
             "required": ["query"],
@@ -81,7 +82,10 @@ ASK_EARNINGS_TOOLS: list[dict[str, Any]] = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "company": {"type": "string", "description": "Optional ticker filter."},
+                "company": {
+                    "type": "string",
+                    "description": "Optional ticker or company name filter (e.g. HBAN or Huntington).",
+                },
                 "q": {"type": "string", "description": "Keyword in full transcript text."},
                 "topic": {"type": "string", "description": "Alias for q — substring match."},
                 "limit": {
@@ -129,6 +133,33 @@ def _snippet(text: str, needle: str, radius: int = 90) -> str:
     if end < len(text):
         out = out + "…"
     return out
+
+
+_TICKER_RE = re.compile(r"^[A-Z]{1,5}(\.[A-Z]{1,2})?$")
+
+
+async def _resolve_company_to_ticker(session: AsyncSession, company: str | None) -> str | None:
+    """Map a ticker symbol or company name to a stored transcript ticker."""
+    if not company or not company.strip():
+        return None
+    raw = company.strip()
+    up = raw.upper()
+    if _TICKER_RE.match(up):
+        return up
+    result = await lookup_company_ticker(session, raw, limit=1)
+    matches = result.get("matches") or []
+    if matches:
+        ticker = str(matches[0].get("ticker") or "").strip().upper()
+        if ticker:
+            return ticker
+    res = await session.execute(
+        select(Transcript.ticker)
+        .where(Transcript.company_name.is_not(None), Transcript.company_name.ilike(f"%{raw}%"))
+        .order_by(Transcript.created_at.desc())
+        .limit(1)
+    )
+    row = res.scalar_one_or_none()
+    return str(row).strip().upper() if row else None
 
 
 def _loads(s: str | None) -> dict[str, Any] | None:
@@ -254,9 +285,10 @@ async def _search_transcript_quotes(
     qn = (query or "").strip()
     if len(qn) < 2:
         return {"found": False, "note": "query too short"}
+    ticker = await _resolve_company_to_ticker(session, company)
     conds = [func.instr(func.lower(TranscriptSection.text), qn.lower()) > 0]
-    if company and company.strip():
-        conds.append(func.upper(Transcript.ticker) == company.strip().upper())
+    if ticker:
+        conds.append(func.upper(Transcript.ticker) == ticker)
     stmt = (
         select(TranscriptSection, Transcript)
         .join(Transcript, TranscriptSection.transcript_id == Transcript.id)
@@ -278,7 +310,34 @@ async def _search_transcript_quotes(
                 "excerpt": _snippet(sec.text, qn, radius=120),
             }
         )
-    return {"found": bool(quotes), "query": qn, "count": len(quotes), "quotes": quotes}
+    if not quotes and ticker:
+        raw_stmt = (
+            select(Transcript)
+            .where(
+                func.upper(Transcript.ticker) == ticker,
+                func.instr(func.lower(Transcript.raw_text), qn.lower()) > 0,
+            )
+            .order_by(Transcript.created_at.desc())
+            .limit(6)
+        )
+        raw_rows = list((await session.execute(raw_stmt)).scalars().all())
+        for tr in raw_rows:
+            quotes.append(
+                {
+                    "transcript_id": tr.id,
+                    "ticker": tr.ticker,
+                    "quarter": tr.quarter,
+                    "section_type": "full_transcript",
+                    "speaker": None,
+                    "excerpt": _snippet(tr.raw_text, qn, radius=120),
+                }
+            )
+    out: dict[str, Any] = {"found": bool(quotes), "query": qn, "count": len(quotes), "quotes": quotes}
+    if company and company.strip() and not ticker:
+        out["note"] = f'Could not resolve company filter "{company.strip()}" to a ticker.'
+    elif ticker and company and company.strip().upper() != ticker:
+        out["resolved_ticker"] = ticker
+    return out
 
 
 async def _search_transcripts(
@@ -288,13 +347,13 @@ async def _search_transcripts(
     topic: str | None = None,
     limit: int = 8,
 ) -> dict[str, Any]:
-    c = company.strip() if company else None
     qq = (q or topic or "").strip()
-    if not c and not qq:
+    ticker = await _resolve_company_to_ticker(session, company)
+    if not ticker and not qq:
         return {"found": False, "note": "Provide company and/or q/topic."}
     conds = []
-    if c:
-        conds.append(func.upper(Transcript.ticker) == c.upper())
+    if ticker:
+        conds.append(func.upper(Transcript.ticker) == ticker)
     if qq:
         conds.append(func.instr(func.lower(Transcript.raw_text), qq.lower()) > 0)
     n = max(1, min(int(limit or 8), 20))
@@ -312,7 +371,12 @@ async def _search_transcripts(
                 "snippet": _snippet(tr.raw_text, qq),
             }
         )
-    return {"found": bool(hits), "count": len(hits), "hits": hits}
+    out: dict[str, Any] = {"found": bool(hits), "count": len(hits), "hits": hits}
+    if company and company.strip() and not ticker:
+        out["note"] = f'Could not resolve company filter "{company.strip()}" to a ticker.'
+    elif ticker and company and company.strip().upper() != ticker:
+        out["resolved_ticker"] = ticker
+    return out
 
 
 async def _company_earnings_timeline(session: AsyncSession, ticker: str) -> dict[str, Any]:
