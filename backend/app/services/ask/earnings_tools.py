@@ -12,6 +12,11 @@ from app.services.comparison_runner import quarter_sort_key
 
 from app.services.ticker_resolution import LOOKUP_COMPANY_TICKER_TOOL, lookup_company_ticker
 
+
+def _sort_transcripts_newest_first(transcripts: list[Transcript]) -> list[Transcript]:
+    return sorted(transcripts, key=quarter_sort_key, reverse=True)
+
+
 ASK_EARNINGS_TOOLS: list[dict[str, Any]] = [
     LOOKUP_COMPANY_TICKER_TOOL,
     {
@@ -146,16 +151,13 @@ async def _list_transcripts_for_ticker(
         return {"found": False, "note": "empty ticker"}
     n = max(1, min(int(limit or 5), 20))
     res = await session.execute(
-        select(Transcript)
-        .where(func.upper(Transcript.ticker) == t_up)
-        .order_by(Transcript.created_at.desc())
-        .limit(n)
+        select(Transcript).where(func.upper(Transcript.ticker) == t_up)
     )
-    rows = list(res.scalars().all())
+    rows = _sort_transcripts_newest_first(list(res.scalars().all()))[:n]
     if not rows:
         return {"found": False, "ticker": t_up, "note": "No transcripts stored for this ticker."}
     items = []
-    for tr in rows:
+    for i, tr in enumerate(rows):
         items.append(
             {
                 "transcript_id": tr.id,
@@ -164,6 +166,7 @@ async def _list_transcripts_for_ticker(
                 "call_date": tr.call_date.isoformat() if tr.call_date else None,
                 "company_name": tr.company_name,
                 "status": tr.status,
+                "is_most_recent": i == 0,
             }
         )
     return {"found": True, "ticker": t_up, "count": len(items), "transcripts": items}
@@ -322,6 +325,8 @@ async def _company_earnings_timeline(session: AsyncSession, ticker: str) -> dict
         return {"found": False, "ticker": t_up, "note": "No transcripts for this ticker."}
     company_name = next((x.company_name for x in transcripts if x.company_name), None)
     ordered = sorted(transcripts, key=quarter_sort_key)
+    newest = ordered[-1] if ordered else None
+    latest_analyzed: Transcript | None = None
     points: list[dict[str, Any]] = []
     for t in ordered:
         if t.status != "analyzed":
@@ -330,6 +335,7 @@ async def _company_earnings_timeline(session: AsyncSession, ticker: str) -> dict
         ar = ar_res.scalar_one_or_none()
         if ar is None or ar.status != "complete":
             continue
+        latest_analyzed = t
         sent = _loads(ar.sentiment_json) or {}
         hed = _loads(ar.hedging_json) or {}
         guid = _loads(ar.guidance_json) or {}
@@ -365,6 +371,10 @@ async def _company_earnings_timeline(session: AsyncSession, ticker: str) -> dict
         "found": bool(points),
         "ticker": t_up,
         "company_name": company_name,
+        "latest_quarter": newest.quarter if newest else None,
+        "latest_transcript_id": newest.id if newest else None,
+        "latest_analyzed_quarter": latest_analyzed.quarter if latest_analyzed else None,
+        "latest_analyzed_transcript_id": latest_analyzed.id if latest_analyzed else None,
         "analyzed_call_count": len(points),
         "points": points,
     }

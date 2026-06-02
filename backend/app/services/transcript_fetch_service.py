@@ -17,6 +17,7 @@ from app.services.earningscall_client import (
 )
 from app.services.edgar_client import EdgarClient, EdgarError
 from app.services.sec_ticker_registry import search_sec_companies
+from app.services.comparison_runner import quarter_sort_key
 from app.services.transcript_parser import parse_sections
 from app.settings import settings
 
@@ -295,25 +296,37 @@ async def fetch_next_missing_quarter(
     return None
 
 
-async def _analyze_newest_raw(session: AsyncSession, ticker: str) -> str | None:
+def _sort_transcripts_newest_first(transcripts: list[Transcript]) -> list[Transcript]:
+    return sorted(transcripts, key=quarter_sort_key, reverse=True)
+
+
+async def _load_usable_transcripts(session: AsyncSession, ticker: str) -> list[Transcript]:
     t_up = normalize_earnings_ticker(ticker)
     res = await session.execute(
-        select(Transcript)
-        .where(
+        select(Transcript).where(
             func.upper(Transcript.ticker) == t_up,
-            Transcript.status == "raw",
+            Transcript.status.in_(_USABLE_STATUSES),
             func.length(Transcript.raw_text) > 100,
         )
-        .order_by(Transcript.created_at.desc())
-        .limit(1)
     )
-    raw = res.scalar_one_or_none()
-    if raw is None:
+    return _sort_transcripts_newest_first(list(res.scalars().all()))
+
+
+async def _analyze_newest_raw(session: AsyncSession, ticker: str) -> str | None:
+    t_up = normalize_earnings_ticker(ticker)
+    ordered = await _load_usable_transcripts(session, t_up)
+    if not ordered:
         return None
-    q_label = raw.quarter or "latest quarter"
-    await run_transcript_analysis(raw.id)
-    await session.refresh(raw)
-    if raw.status == "analyzed":
+
+    newest = ordered[0]
+    q_label = newest.quarter or "latest quarter"
+
+    if newest.status == "analyzed":
+        return f"Most recent call {t_up} {q_label} is already analyzed."
+
+    await run_transcript_analysis(newest.id)
+    await session.refresh(newest)
+    if newest.status == "analyzed":
         return f"Analysis complete for {t_up} {q_label}."
     return f"Transcript stored for {t_up} {q_label}, but analysis did not finish — quote search still works."
 
@@ -372,17 +385,7 @@ async def ensure_transcripts_for_ticker(
             notes.append(f"Could not fetch {t_up} earnings transcript: {e}")
             return [], notes
 
-    res = await session.execute(
-        select(Transcript)
-        .where(
-            func.upper(Transcript.ticker) == t_up,
-            Transcript.status.in_(_USABLE_STATUSES),
-            func.length(Transcript.raw_text) > 100,
-        )
-        .order_by(Transcript.created_at.desc())
-        .limit(target)
-    )
-    transcripts = list(res.scalars().all())
+    transcripts = (await _load_usable_transcripts(session, t_up))[:target]
 
     if len(transcripts) >= 2:
         shown = transcripts[:6]
