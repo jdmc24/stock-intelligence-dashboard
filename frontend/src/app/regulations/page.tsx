@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 
-import { CompanyProfileAdmin } from "@/components/regulations/CompanyProfileAdmin";
+import { PageHeader, PageShell } from "@/components/PageShell";
 import { RegulatoryChecklist } from "@/components/regulations/RegulatoryChecklist";
 import { SeverityBadge } from "@/components/regulations/SeverityBadge";
 import {
@@ -124,19 +124,14 @@ export default function RegulationsPage() {
   const totalPages = Math.max(1, Math.ceil(total / perPage));
 
   return (
-    <div className="page-canvas">
-      <main className="mx-auto max-w-5xl px-6 py-10">
-        <div className="max-w-2xl">
-          <p className="text-xs font-medium uppercase tracking-widest text-teal-700 dark:text-teal-400/90">
-            Regulatory monitor
-          </p>
-          <h1 className="mt-2 text-3xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50 sm:text-4xl">
-            Federal Register feed
-          </h1>
-          <p className="mt-2 text-sm leading-relaxed text-zinc-600 dark:text-zinc-400">
-            Ingested documents from the Federal Register API, enriched with Claude for summaries, severity, and product
-            tags. Not legal advice.
-          </p>
+    <PageShell>
+      <PageHeader
+        eyebrow="Regulatory monitor"
+        title="Federal Register feed"
+        description="Ingested documents from the Federal Register API, enriched with Claude for summaries, severity, and product tags. Not legal advice."
+        className="max-w-2xl"
+      />
+      <div className="max-w-2xl">
           {pipeline ? (
             <div className="mt-4 space-y-2 text-xs text-zinc-600 dark:text-zinc-400">
               <p className="flex flex-wrap gap-x-3 gap-y-1">
@@ -363,7 +358,6 @@ export default function RegulationsPage() {
             </button>
           </div>
         ) : null}
-      </main>
-    </div>
+    </PageShell>
   );
 }

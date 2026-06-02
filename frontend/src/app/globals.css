@@ -3,6 +3,9 @@
 :root {
   --background: #fafafa;
   --foreground: #0c0c0c;
+  --shell-max-wide: 80rem;
+  --shell-max-content: 64rem;
+  --ask-workspace-min-h: min(72vh, 640px);
 }
 
 @theme inline {
@@ -25,6 +28,12 @@ body {
   font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
 }
 
+@media (min-width: 1024px) {
+  :root {
+    --ask-workspace-min-h: calc(100dvh - 15.75rem);
+  }
+}
+
 ::selection {
   background: rgb(20 184 166 / 0.28);
 }
@@ -44,5 +53,30 @@ body {
 
   .btn-secondary {
     @apply min-h-11 rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-medium text-zinc-900 shadow-sm transition hover:bg-zinc-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-400 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900/50 dark:text-zinc-100 dark:hover:bg-zinc-800/80 dark:focus-visible:outline-zinc-500;
+  }
+
+  .app-shell {
+    @apply w-full;
+  }
+
+  .ask-workspace-grid {
+    min-height: var(--ask-workspace-min-h);
+  }
+
+  @media (min-width: 1024px) {
+    .ask-workspace-grid {
+      @apply grid min-h-0 flex-1 gap-6;
+      grid-template-columns: minmax(0, 1fr) minmax(320px, 26rem);
+      min-height: var(--ask-workspace-min-h);
+      max-height: var(--ask-workspace-min-h);
+    }
+
+    .ask-pane {
+      @apply min-h-0 overflow-hidden;
+    }
+
+    .ask-pane > * {
+      @apply h-full min-h-0;
+    }
   }
 }

@@ -16,7 +16,7 @@ export function AppNav() {
 
   return (
     <header className="sticky top-0 z-50 border-b border-zinc-200/90 bg-white/85 backdrop-blur-md dark:border-zinc-800/90 dark:bg-zinc-950/85">
-      <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-6 py-3">
+      <div className="app-shell mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-3 sm:px-6 lg:px-8">
         <Link href="/" className="group flex min-w-0 items-center gap-3">
           <span
             className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-teal-500 to-emerald-700 shadow-md shadow-teal-600/25 ring-1 ring-white/25 dark:from-teal-400 dark:to-emerald-700 dark:shadow-teal-900/40"
