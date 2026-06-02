@@ -23,10 +23,15 @@ EventCallback = Callable[[dict[str, Any]], Awaitable[None]]
 _EARNINGS_HINTS = (
     "earnings",
     "earnings call",
+    "earning call",
     "conference call",
     "transcript",
     "on the call",
     "next call",
+    "most recent call",
+    "latest call",
+    "highlights",
+    "highlight",
     "said on",
     "talk about on",
     "talks about",
@@ -82,7 +87,19 @@ def parse_intent(question: str, context: dict[str, Any] | None) -> dict[str, Any
             topics.append("AI")
 
     if not topics and q:
-        topics = [w for w in re.findall(r"[a-zA-Z]{4,}", q_lower) if w not in ("might", "would", "could", "about", "recent")][:3]
+        topics = [
+            w
+            for w in re.findall(r"[a-zA-Z]{4,}", q_lower)
+            if w not in ("might", "would", "could", "about", "recent", "were", "most", "from", "what", "when")
+        ][:3]
+
+    needs_earnings = needs_earnings or (
+        bool(tickers)
+        and any(
+            w in q_lower
+            for w in (" call", "call ", "earning", "earnings", "transcript", "highlights", "guidance", "quarter")
+        )
+    )
 
     return {
         "tickers": tickers[:5],
@@ -93,8 +110,15 @@ def parse_intent(question: str, context: dict[str, Any] | None) -> dict[str, Any
 
 
 def should_run_earnings(intent: dict[str, Any]) -> bool:
-    """Only run the earnings specialist when the question is about calls/transcripts."""
-    return bool(intent.get("needs_earnings"))
+    """Run the earnings specialist when the question is about calls/transcripts."""
+    if intent.get("needs_earnings"):
+        return True
+    tickers = intent.get("tickers") or []
+    if not tickers:
+        return False
+    topics = [str(t).lower() for t in (intent.get("topics") or [])]
+    call_topics = {"call", "calls", "earnings", "earning", "transcript", "highlights", "highlight", "guidance", "quarter"}
+    return bool(call_topics.intersection(topics))
 
 
 def build_plan(intent: dict[str, Any]) -> dict[str, Any]:

@@ -80,6 +80,37 @@ _TICKER_STOP = frozenset(
     }
 )
 
+# Common English words that must never become ticker lookups from chat text.
+_RESOLUTION_NOISE = frozenset(
+    {
+        "were",
+        "was",
+        "most",
+        "from",
+        "recent",
+        "latest",
+        "earning",
+        "earnings",
+        "highlights",
+        "highlight",
+        "call",
+        "calls",
+        "what",
+        "when",
+        "where",
+        "which",
+        "there",
+        "they",
+        "them",
+        "this",
+        "that",
+        "with",
+        "have",
+        "been",
+        "said",
+    }
+)
+
 _FILLER = frozenset(
     {
         "compare",
@@ -144,6 +175,14 @@ _FILLER = frozenset(
         "traded",
         "stock",
         "stocks",
+        "were",
+        "was",
+        "most",
+        "from",
+        "recent",
+        "highlight",
+        "highlights",
+        "earning",
     }
 )
 
@@ -307,7 +346,7 @@ def extract_name_candidates(text: str) -> list[str]:
 
     for word in words:
         token = word.strip("'.")
-        if token.lower() in _FILLER:
+        if token.lower() in _FILLER or token.lower() in _RESOLUTION_NOISE:
             continue
         if 3 <= len(token) <= 5 or len(token) >= 5:
             candidates.append(_clean_candidate(token))
@@ -419,7 +458,15 @@ async def _resolve_candidate(
     *,
     limit: int = 1,
 ) -> dict[str, Any] | None:
+    cleaned = _clean_candidate(name)
+    if cleaned.lower() in _RESOLUTION_NOISE:
+        return None
+    sig = significant_query_tokens(cleaned)
+    if len(sig) == 1 and sig[0] in _RESOLUTION_NOISE:
+        return None
     for variant in _candidate_lookup_variants(name):
+        if variant.lower() in _RESOLUTION_NOISE:
+            continue
         result = await lookup_company_ticker(session, variant, limit=limit)
         matches = result.get("matches") or []
         if not matches:
@@ -427,7 +474,8 @@ async def _resolve_candidate(
         hit = matches[0]
         ticker = str(hit.get("ticker") or "").strip().upper()
         score = float(hit.get("score") or 0)
-        if ticker and score >= 55.0:
+        min_score = 70.0 if len(sig) == 1 else 55.0
+        if ticker and score >= min_score:
             hit = {**hit, "matched_variant": variant}
             return hit
     return None

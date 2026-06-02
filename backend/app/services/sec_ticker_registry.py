@@ -191,8 +191,6 @@ def _score_match(query: str, entry: SecCompanyEntry) -> float:
         token = match_tokens[0]
         if token in title_tokens:
             return 70.0 + len(token)
-        if any(token in tt for tt in title_tokens if len(tt) >= 4):
-            return 55.0 + len(token)
 
     return 0.0
 

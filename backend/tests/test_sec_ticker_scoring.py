@@ -27,3 +27,8 @@ def test_huntington_bancshares_scores():
 
 def test_generic_bank_alone_scores_zero():
     assert _score_match("bank", PNC) == 0.0
+
+
+def test_substring_words_do_not_false_match():
+    assert _score_match("were", PNC) == 0.0
+    assert _score_match("earning", PNC) == 0.0
