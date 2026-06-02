@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 
 import { PageHeader, PageShell } from "@/components/PageShell";
+import { CompanyProfileAdmin } from "@/components/regulations/CompanyProfileAdmin";
 import { RegulatoryChecklist } from "@/components/regulations/RegulatoryChecklist";
 import { SeverityBadge } from "@/components/regulations/SeverityBadge";
 import {
