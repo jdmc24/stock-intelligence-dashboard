@@ -44,30 +44,48 @@ def _quarter_label(year: int, quarter: int) -> str:
     return f"Q{quarter}-{year}"
 
 
-def ask_prefetch_targets(question: str) -> tuple[int, int]:
-    """Return (stored_target, max_fetch) for this question.
+def ask_prefetch_targets(question: str, *, ticker_count: int = 1) -> tuple[int, int, bool]:
+    """Return (stored_target, max_fetch, run_analysis) for this question.
 
-    stored_target is how many quarters we want on file for the ticker.
-    max_fetch caps new API pulls this run so Ask stays responsive while
-    backfilling toward the 32-quarter goal across repeated questions.
+    stored_target: quarters we want on file for the ticker.
+    max_fetch: cap new EarningsCall pulls this run (incremental backfill).
+    run_analysis: whether to run four-pass LLM analysis on the newest call during prefetch
+    (skipped for compare questions — quote search works on raw text; saves minutes).
     """
     q = (question or "").lower()
-    if any(
+    is_compare = any(
         hint in q
         for hint in (
             "compare",
             "comparison",
             "versus",
             " vs ",
+            " vs.",
+            "side by side",
+            "head to head",
+        )
+    )
+
+    if is_compare and ticker_count >= 2:
+        return 4, 3, False
+    if is_compare:
+        return 6, 4, False
+
+    if any(
+        hint in q
+        for hint in (
             "over time",
             "over the last",
             "several calls",
             "multiple calls",
             "history",
             "trend",
+            "years",
+            "quarters",
         )
     ):
-        return ASK_EARNINGS_STORED_TARGET, ASK_EARNINGS_MAX_FETCH_PER_RUN
+        return ASK_EARNINGS_STORED_TARGET, ASK_EARNINGS_MAX_FETCH_PER_RUN, True
+
     if any(
         hint in q
         for hint in (
@@ -79,9 +97,9 @@ def ask_prefetch_targets(question: str) -> tuple[int, int]:
             "recent call",
         )
     ):
-        # Focus on the newest call but still pull a little history when possible.
-        return 2, 6
-    return ASK_EARNINGS_STORED_TARGET, ASK_EARNINGS_MAX_FETCH_PER_RUN
+        return 2, 6, True
+
+    return 8, 6, True
 
 
 async def _company_name_for_ticker(ticker: str) -> str | None:

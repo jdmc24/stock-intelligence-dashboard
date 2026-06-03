@@ -7,6 +7,7 @@ from typing import Any, Awaitable, Callable
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db import session_context
 from app.prompts.ask_prompts import SYNTHESIS_SYSTEM
 from app.services.ask.earnings_agent import run_earnings_agent
 from app.services.ask.events import AskEventEmitter
@@ -56,6 +57,31 @@ _EARNINGS_HINTS = (
     "versus",
     " vs ",
     "say about",
+)
+
+_REGULATION_HINTS = (
+    "regulation",
+    "regulatory",
+    "federal register",
+    "rule",
+    "rules",
+    "compliance",
+    "sec ",
+    " sec",
+    "occ ",
+    "fdic",
+    "cfpb",
+    "frb",
+    "fed ",
+    "federal reserve",
+    "dodd-frank",
+    "basel",
+    "capital requirement",
+    "privacy rule",
+    "disclosure requirement",
+    "enforcement",
+    "rulemaking",
+    "proposed rule",
 )
 
 
@@ -125,17 +151,43 @@ def should_run_earnings(intent: dict[str, Any]) -> bool:
     return bool(call_topics.intersection(topics))
 
 
-def build_plan(intent: dict[str, Any]) -> dict[str, Any]:
+def should_run_regulations(question: str, intent: dict[str, Any]) -> bool:
+    """Skip regulations research for earnings-only questions (saves a full agent loop)."""
+    if intent.get("regulation_id"):
+        return True
+    q = (question or "").lower()
+    if any(h in q for h in _REGULATION_HINTS):
+        return True
+    if "how might" in q and any(h in q for h in ("rule", "regulation", "regulatory", "compliance", "law")):
+        return True
+    if intent.get("needs_earnings") and not any(h in q for h in _REGULATION_HINTS):
+        return False
+    return True
+
+
+def build_plan(intent: dict[str, Any], *, run_regulations: bool = True) -> dict[str, Any]:
     run_earnings = should_run_earnings(intent)
     steps: list[dict[str, Any]] = [
         {"id": "parse", "agent": "orchestrator", "label": "Understand your question", "status": "done"},
-        {
-            "id": "regulations",
-            "agent": "regulations",
-            "label": "Research relevant Federal Register rules",
-            "status": "pending",
-        },
     ]
+    if run_regulations:
+        steps.append(
+            {
+                "id": "regulations",
+                "agent": "regulations",
+                "label": "Research relevant Federal Register rules",
+                "status": "pending",
+            }
+        )
+    else:
+        steps.append(
+            {
+                "id": "regulations",
+                "agent": "regulations",
+                "label": "Research relevant Federal Register rules",
+                "status": "skipped",
+            }
+        )
     if run_earnings:
         steps.append(
             {
@@ -176,12 +228,19 @@ async def run_ask(
     intent["tickers"] = resolved_tickers
 
     run_earnings = should_run_earnings(intent)
+    run_regulations = should_run_regulations(q, intent)
 
     await emit(
         emitter.next(
             "run_started",
             question=q,
-            phase="regulations_and_earnings" if run_earnings else "regulations_only",
+            phase=(
+                "regulations_and_earnings"
+                if run_earnings and run_regulations
+                else "earnings_only"
+                if run_earnings
+                else "regulations_only"
+            ),
         )
     )
 
@@ -207,56 +266,90 @@ async def run_ask(
             if tickers and (intent.get("topics") or intent.get("needs_earnings")):
                 run_earnings = should_run_earnings(intent)
 
-    plan = build_plan(intent)
+    plan = build_plan(intent, run_regulations=run_regulations)
     await emit(emitter.next("plan", **plan))
 
     await emit(emitter.next("agent_start", agent="orchestrator", label="Planning"))
 
-    for tk in intent.get("tickers") or []:
-        profile, created = await ensure_company_reg_profile(session, str(tk), context_question=q)
-        if created and profile:
+    profile_tasks = [
+        ensure_company_reg_profile(session, str(tk), context_question=q)
+        for tk in (intent.get("tickers") or [])
+    ]
+    if profile_tasks:
+        profile_results = await asyncio.gather(*profile_tasks)
+        for (profile, created), tk in zip(profile_results, intent.get("tickers") or []):
+            if created and profile:
+                await emit(
+                    emitter.next(
+                        "message",
+                        level="info",
+                        text=(
+                            f"Auto-created regulatory profile for {profile.ticker} ({profile.name}). "
+                            "Tags are inferred — refine on the company page if needed."
+                        ),
+                    )
+                )
+
+    async def _prefetch_one(
+        tk: str,
+        min_count: int,
+        max_fetch: int,
+        *,
+        run_analysis: bool,
+    ) -> tuple[str, list, list[str]]:
+        t_up = str(tk).strip().upper()
+        async with session_context() as iso_session:
+            transcripts, fetch_notes = await ensure_transcripts_for_ticker(
+                iso_session,
+                t_up,
+                min_count=min_count,
+                max_fetch=max_fetch,
+                run_analysis=run_analysis,
+            )
+        return t_up, transcripts, fetch_notes
+
+    if run_earnings:
+        ticker_list = [str(tk) for tk in (intent.get("tickers") or [])]
+        min_count, max_fetch, run_analysis = ask_prefetch_targets(q, ticker_count=len(ticker_list))
+        prefetch_notes: list[str] = []
+        prefetched: set[str] = set()
+
+        if len(ticker_list) >= 2 and any(
+            h in q.lower() for h in ("compare", "comparison", "versus", " vs ", " vs.")
+        ):
             await emit(
                 emitter.next(
                     "message",
                     level="info",
                     text=(
-                        f"Auto-created regulatory profile for {profile.ticker} ({profile.name}). "
-                        "Tags are inferred — refine on the company page if needed."
+                        "Compare mode: fetching a few recent calls per ticker in parallel "
+                        "(skipping heavy analysis during prefetch for speed)."
                     ),
                 )
             )
 
-    if run_earnings:
-        min_count, max_fetch = ask_prefetch_targets(q)
-        prefetch_notes: list[str] = []
-        prefetched: set[str] = set()
-
-        async def _prefetch_ticker(tk: str) -> None:
-            t_up = str(tk).strip().upper()
-            if not t_up or t_up in prefetched:
-                return
-            prefetched.add(t_up)
-            transcripts, fetch_notes = await ensure_transcripts_for_ticker(
-                session,
-                t_up,
-                min_count=min_count,
-                max_fetch=max_fetch,
-                run_analysis=True,
+        if ticker_list:
+            prefetch_results = await asyncio.gather(
+                *[
+                    _prefetch_one(tk, min_count, max_fetch, run_analysis=run_analysis)
+                    for tk in ticker_list
+                ]
             )
-            prefetch_notes.extend(fetch_notes)
-            coverage = intent.setdefault("earnings_coverage", {})
-            coverage[t_up] = {
-                "stored": len(transcripts),
-                "target_this_run": min_count,
-                "stored_goal": ASK_EARNINGS_STORED_TARGET,
-                "newest_quarter": transcripts[0].quarter if transcripts else None,
-            }
-            for note in fetch_notes:
-                level = "warn" if note.startswith("Could not fetch") or note.startswith("No earnings") else "info"
-                await emit(emitter.next("message", level=level, text=note))
-
-        for tk in intent.get("tickers") or []:
-            await _prefetch_ticker(str(tk))
+            for t_up, transcripts, fetch_notes in prefetch_results:
+                if not t_up:
+                    continue
+                prefetched.add(t_up)
+                prefetch_notes.extend(fetch_notes)
+                coverage = intent.setdefault("earnings_coverage", {})
+                coverage[t_up] = {
+                    "stored": len(transcripts),
+                    "target_this_run": min_count,
+                    "stored_goal": ASK_EARNINGS_STORED_TARGET,
+                    "newest_quarter": transcripts[0].quarter if transcripts else None,
+                }
+                for note in fetch_notes:
+                    level = "warn" if note.startswith("Could not fetch") or note.startswith("No earnings") else "info"
+                    await emit(emitter.next("message", level=level, text=note))
 
         if run_earnings and not intent.get("tickers"):
             prefetch_notes.append(
@@ -270,26 +363,41 @@ async def run_ask(
     await emit(emitter.next("agent_end", agent="orchestrator", status="ok", summary="Plan ready"))
 
     in_reg = out_reg = in_ear = out_ear = 0
-    reg_brief: dict[str, Any]
+    reg_brief: dict[str, Any] = {
+        "research_summary": "Regulations research skipped for this earnings-focused question.",
+        "key_documents": [],
+        "tickers": list(intent.get("tickers") or []),
+        "topics": intent.get("topics") or [],
+        "gaps": [],
+    }
     earn_brief: dict[str, Any] | None = None
 
-    await emit(emitter.next("agent_start", agent="regulations", label="Regulations research"))
-    reg_brief, in_reg, out_reg = await run_regulations_agent(
-        session,
-        question=q,
-        intent=intent,
-        lookback_days=lookback_days,
-        emit=emit,
-        emitter=emitter,
-    )
-    await emit(
-        emitter.next(
-            "agent_end",
-            agent="regulations",
-            status="ok",
-            summary=(reg_brief.get("research_summary") or "Regulations research complete.")[:240],
+    if run_regulations:
+        await emit(emitter.next("agent_start", agent="regulations", label="Regulations research"))
+        reg_brief, in_reg, out_reg = await run_regulations_agent(
+            session,
+            question=q,
+            intent=intent,
+            lookback_days=lookback_days,
+            emit=emit,
+            emitter=emitter,
         )
-    )
+        await emit(
+            emitter.next(
+                "agent_end",
+                agent="regulations",
+                status="ok",
+                summary=(reg_brief.get("research_summary") or "Regulations research complete.")[:240],
+            )
+        )
+    else:
+        await emit(
+            emitter.next(
+                "message",
+                level="info",
+                text="Skipping regulations research — earnings-only question.",
+            )
+        )
 
     if run_earnings:
         merged_tickers = list(intent.get("tickers") or [])
@@ -305,28 +413,27 @@ async def run_ask(
             if t not in set(intent.get("_prefetched_tickers") or [])
         ]
         if new_for_prefetch:
-            min_count, max_fetch = ask_prefetch_targets(q)
-            for tk in new_for_prefetch:
-                _transcripts, fetch_notes = await ensure_transcripts_for_ticker(
-                    session,
-                    tk,
-                    min_count=min_count,
-                    max_fetch=max_fetch,
-                    run_analysis=True,
-                )
+            min_count, max_fetch, run_analysis = ask_prefetch_targets(q, ticker_count=len(new_for_prefetch))
+            late_results = await asyncio.gather(
+                *[
+                    _prefetch_one(tk, min_count, max_fetch, run_analysis=run_analysis)
+                    for tk in new_for_prefetch
+                ]
+            )
+            for t_up, transcripts, fetch_notes in late_results:
                 intent.setdefault("prefetch_notes", []).extend(fetch_notes)
                 coverage = intent.setdefault("earnings_coverage", {})
-                coverage[tk] = {
-                    "stored": len(_transcripts),
+                coverage[t_up] = {
+                    "stored": len(transcripts),
                     "target_this_run": min_count,
                     "stored_goal": ASK_EARNINGS_STORED_TARGET,
-                    "newest_quarter": _transcripts[0].quarter if _transcripts else None,
+                    "newest_quarter": transcripts[0].quarter if transcripts else None,
                 }
                 for note in fetch_notes:
                     level = "warn" if note.startswith("Could not fetch") or note.startswith("No earnings") else "info"
                     await emit(emitter.next("message", level=level, text=note))
                 prefetched = set(intent.get("_prefetched_tickers") or [])
-                prefetched.add(tk)
+                prefetched.add(t_up)
                 intent["_prefetched_tickers"] = sorted(prefetched)
             intent["tickers"] = merged_tickers[:5]
             for tk in new_for_prefetch:
@@ -359,9 +466,11 @@ async def run_ask(
     await emit(emitter.next("agent_start", agent="synthesizer", label="Writing answer"))
     answer_payload, in_syn, out_syn = await _synthesize(q, intent, reg_brief, earn_brief)
 
-    agents_used = ["orchestrator", "regulations", "synthesizer"]
+    agents_used = ["orchestrator", "synthesizer"]
+    if run_regulations:
+        agents_used.insert(1, "regulations")
     if run_earnings:
-        agents_used.insert(2, "earnings")
+        agents_used.insert(-1, "earnings")
     answer_payload["agents_used"] = agents_used
 
     await emit(emitter.next("answer", **{k: v for k, v in answer_payload.items() if k != "type"}))
