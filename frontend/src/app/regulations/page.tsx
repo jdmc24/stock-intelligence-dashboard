@@ -34,6 +34,7 @@ export default function RegulationsPage() {
   const [infoMessage, setInfoMessage] = useState<string | null>(null);
 
   const load = useCallback(async () => {
+    void filterTick;
     setError(null);
     setLoading(true);
     try {

@@ -23,6 +23,11 @@ The **backend** is a long‑running FastAPI app (SQLite, optional scheduler). Th
    | `EARNINGSCALL_API_KEY` | Optional; needed for tickers beyond demo tier. |
    | `DATABASE_URL` | Default SQLite path is `./data/app.db` under `backend`. For persistence across deploys, add a **Volume** (see below). |
    | `REGULATORY_SCHEDULER_ENABLED` | Default `false`. Set `true` only if you want in-process ingest/enrich on an interval (uses API keys + cost). |
+   | `MARKET_RESEARCH_SCHEDULER_ENABLED` | Default `false`. Set `true` to run the daily customer-discovery brief generator in-process. |
+   | `MARKET_RESEARCH_SCHEDULER_RUN_ON_STARTUP` | Default `false`. Set `true` only when you want a brief generated immediately on deploy/startup. |
+   | `MARKET_RESEARCH_RSS_URLS` | Optional comma-separated RSS feeds for permitted market/audience signals; Hacker News Algolia is used even when this is blank. |
+   | `OPENAI_API_KEY` | Optional; enables LLM classification and synthesis for the market research crawler. Without it, heuristic classification is used. |
+   | `OPENAI_MODEL` | Optional; model for market-research classification and briefs. |
 
 5. **Networking** → **Generate Domain** (or attach a custom domain). Copy the public URL, e.g. `https://your-api.up.railway.app`.
 6. Smoke test: `GET https://your-api.up.railway.app/healthz` → `{"ok":true}` with no auth.  
@@ -59,6 +64,56 @@ The default DB path is on the container filesystem and **can reset** when the se
 - [ ] Optional: volume + `DATABASE_URL` if you need durable SQLite  
 - [ ] If Claude's **Agent reasoning** trace flags CAPTCHA / access-denial text in the document body: open **Regulations** in the app → **Repair FR bodies** (or `POST /api/regulations/admin/refetch-compromised`), then **Run AI enrich** again on the raw queue.
 
+### Agent rollout smoke tests
+
+After Railway and Vercel finish deploying:
+
+- Open `/ask` and run: `Claim check: is JPM unusually exposed to new banking capital rules?`
+- Confirm the live trace includes **Regulations specialist**, **Earnings specialist**, and **Claim Check Agent**.
+- Confirm the answer includes a visible verdict (`supported`, `mixed`, `weakly_supported`, `contradicted`, or `unverifiable`) plus citations or explicit evidence gaps.
+- Open `/ask` and run: `How has MSFT AI narrative drifted over the last several earnings calls?`
+- Confirm the live trace includes **Earnings specialist** and **Earnings Drift Agent**, and does not run the regulations specialist for this earnings-only question.
+- Run a normal Ask prompt, e.g. `What recent SEC rules might affect how MSFT discusses AI?`, to verify the regular synthesizer path still works.
+- Optional discovery-agent check: if `MARKET_RESEARCH_SCHEDULER_ENABLED=true`, call `POST /api/market-research/briefs/trigger?lookback_hours=24&max_items=40`, then `GET /api/market-research/briefs/latest`.
+- Open `/research` and confirm the Product Discovery Agent status cards and latest brief render.
+- Confirm `GET /api/agents/status` returns the three deploy-ready agents and `suite_smoke_script=backend/scripts/smoke_agents.py`.
+
+CLI smoke tests for the deployed API:
+
+```bash
+cd backend
+BACKEND_URL="https://your-api.up.railway.app" \
+API_BEARER_TOKEN="same-token-used-by-vercel" \
+python3 scripts/smoke_agents.py
+```
+
+To generate a fresh Product Discovery Agent brief as part of the suite:
+
+```bash
+BACKEND_URL="https://your-api.up.railway.app" \
+API_BEARER_TOKEN="same-token-used-by-vercel" \
+python3 scripts/smoke_agents.py --trigger-market-research
+```
+
+Individual checks remain available for debugging:
+
+```bash
+BACKEND_URL="https://your-api.up.railway.app" \
+API_BEARER_TOKEN="same-token-used-by-vercel" \
+python3 scripts/smoke_claim_check.py
+
+BACKEND_URL="https://your-api.up.railway.app" \
+API_BEARER_TOKEN="same-token-used-by-vercel" \
+python3 scripts/smoke_earnings_drift.py
+
+BACKEND_URL="https://your-api.up.railway.app" \
+API_BEARER_TOKEN="same-token-used-by-vercel" \
+python3 scripts/smoke_market_research.py --trigger
+```
+
+The scripts call `POST /api/ask/stream` and fail unless the SSE trace includes the expected specialist/final agents plus a valid verdict or drift direction.
+The market-research smoke test checks `/api/market-research/status`; with `--trigger`, it also generates a brief and checks `/briefs/latest`.
+
 ### Railway build failed — quick checks
 
 1. Open the failed deployment → **Build Logs** and read the **first error** (often `COPY failed`, `no such file`, `Railpack`, or `pip` / `apt` failures).
@@ -72,6 +127,8 @@ The default DB path is on the container filesystem and **can reset** when the se
 Developers still copy `.env.example` → `backend/.env` and `frontend/.env.local` for local runs; production uses only the host env vars above.
 
 ## 5. GitHub Actions — agent eval suite (optional but recommended)
+
+The repo also includes a no-cost **ci** workflow for deploy readiness. It runs backend agent routing checks, Python compile checks, frontend lint, and frontend build on PRs/pushes touching `backend/` or `frontend/`. It does not require API secrets.
 
 The repo includes a deterministic eval suite for the regulatory enrichment agent (see [`backend/app/evals/`](./backend/app/evals/) and [`.github/workflows/evals.yml`](./.github/workflows/evals.yml)). It runs on every PR that touches the agent path and on manual `workflow_dispatch` from the GitHub Actions UI.
 

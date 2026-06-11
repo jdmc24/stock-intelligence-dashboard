@@ -22,6 +22,16 @@ class Settings(BaseSettings):
         default="claude-sonnet-4-6",
         validation_alias="ANTHROPIC_MODEL",
     )
+    openai_api_key: str | None = Field(
+        default=None,
+        validation_alias="OPENAI_API_KEY",
+        description="OpenAI API key for the daily market research crawler.",
+    )
+    openai_model: str = Field(
+        default="gpt-5.4-mini",
+        validation_alias="OPENAI_MODEL",
+        description="OpenAI model used by the daily market research crawler.",
+    )
     earningcall_api_key: str | None = Field(
         default=None,
         validation_alias="EARNINGSCALL_API_KEY",
@@ -75,6 +85,50 @@ class Settings(BaseSettings):
         description="Max raw documents to enrich per tick (Claude calls).",
     )
 
+    # Daily customer-discovery crawler for market research briefs.
+    market_research_scheduler_enabled: bool = Field(
+        default=False,
+        validation_alias="MARKET_RESEARCH_SCHEDULER_ENABLED",
+        description="If true, background task builds a daily customer-discovery brief.",
+    )
+    market_research_scheduler_run_on_startup: bool = Field(
+        default=False,
+        validation_alias="MARKET_RESEARCH_SCHEDULER_RUN_ON_STARTUP",
+        description="Run the market research crawler once when the API starts.",
+    )
+    market_research_scheduler_hour: int = Field(
+        default=7,
+        ge=0,
+        le=23,
+        validation_alias="MARKET_RESEARCH_SCHEDULER_HOUR",
+        description="Local hour for the daily market research brief.",
+    )
+    market_research_scheduler_minute: int = Field(
+        default=30,
+        ge=0,
+        le=59,
+        validation_alias="MARKET_RESEARCH_SCHEDULER_MINUTE",
+        description="Local minute for the daily market research brief.",
+    )
+    market_research_lookback_hours: int = Field(
+        default=24,
+        ge=1,
+        le=168,
+        validation_alias="MARKET_RESEARCH_LOOKBACK_HOURS",
+        description="Lookback window for source items.",
+    )
+    market_research_max_items: int = Field(
+        default=40,
+        ge=5,
+        le=200,
+        validation_alias="MARKET_RESEARCH_MAX_ITEMS",
+        description="Max normalized source items to process per brief.",
+    )
+    market_research_rss_urls: str = Field(
+        default="",
+        validation_alias="MARKET_RESEARCH_RSS_URLS",
+        description="Comma-separated RSS feed URLs to include in market research crawling.",
+    )
+
 
 settings = Settings()
-

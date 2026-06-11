@@ -551,3 +551,117 @@ export async function searchQuotes(query: string, company?: string) {
   return (await r.json()) as QuoteHit[];
 }
 
+// ——— Product Discovery Agent / Market Research ———
+
+export type MarketResearchStatus = {
+  items: number;
+  insights: number;
+  briefs: number;
+  latest_brief_date: string | null;
+  scheduler_enabled: boolean;
+  rss_feed_count: number;
+};
+
+export type MarketResearchTopPain = {
+  pain: string;
+  who: string;
+  why_it_matters: string;
+  evidence_count: number;
+  suggested_experiment: string;
+};
+
+export type MarketResearchBrief = {
+  id: string | number;
+  brief_date: string;
+  title: string;
+  executive_summary: string;
+  markdown: string;
+  top_pains: MarketResearchTopPain[];
+  suggested_experiments: string[];
+  source_item_count: number;
+  insight_count: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export async function getMarketResearchStatus() {
+  const r = await fetch(`${API_BASE}/api/market-research/status`, {
+    headers: { ...authHeaders() },
+    cache: "no-store",
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return (await r.json()) as MarketResearchStatus;
+}
+
+export async function triggerMarketResearchBrief(args?: {
+  lookback_hours?: number;
+  max_items?: number;
+}) {
+  const sp = new URLSearchParams();
+  if (args?.lookback_hours != null) sp.set("lookback_hours", String(args.lookback_hours));
+  if (args?.max_items != null) sp.set("max_items", String(args.max_items));
+  const qs = sp.toString();
+  const r = await fetch(`${API_BASE}/api/market-research/briefs/trigger${qs ? `?${qs}` : ""}`, {
+    method: "POST",
+    headers: { ...authHeaders() },
+    cache: "no-store",
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return (await r.json()) as {
+    ok: boolean;
+    brief_id: string | number;
+    brief_date: string;
+    source_item_count: number;
+    insight_count: number;
+    title: string;
+  };
+}
+
+export async function getLatestMarketResearchBrief() {
+  const r = await fetch(`${API_BASE}/api/market-research/briefs/latest`, {
+    headers: { ...authHeaders() },
+    cache: "no-store",
+  });
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error(await r.text());
+  return (await r.json()) as MarketResearchBrief;
+}
+
+export async function listMarketResearchBriefs(limit: number = 20) {
+  const r = await fetch(
+    `${API_BASE}/api/market-research/briefs?limit=${encodeURIComponent(String(limit))}`,
+    {
+      headers: { ...authHeaders() },
+      cache: "no-store",
+    },
+  );
+  if (!r.ok) throw new Error(await r.text());
+  return (await r.json()) as { items: MarketResearchBrief[] };
+}
+
+export type AgentSuiteStatus = {
+  ok: boolean;
+  agent_count: number;
+  suite_smoke_script: string;
+  deployment_blocker: string;
+  agents: Array<{
+    id: string;
+    name: string;
+    status: string;
+    surface: string;
+    sample_prompt: string | null;
+    uses: string[];
+    requires: Record<string, boolean>;
+    smoke_script: string;
+    output_contract: Record<string, string[]>;
+  }>;
+};
+
+export async function getAgentsStatus() {
+  const r = await fetch(`${API_BASE}/api/agents/status`, {
+    headers: { ...authHeaders() },
+    cache: "no-store",
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return (await r.json()) as AgentSuiteStatus;
+}

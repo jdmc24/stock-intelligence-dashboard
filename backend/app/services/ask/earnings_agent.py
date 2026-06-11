@@ -189,6 +189,7 @@ async def _deterministic_brief(
         "key_transcripts": key_transcripts,
         "notable_quotes": quotes,
         "narrative_themes": _themes_from_timeline(timeline),
+        "timeline_points": (timeline.get("points") or [])[-8:],
         "timeline_point_count": timeline.get("analyzed_call_count") or 0,
         "gaps": gaps,
     }

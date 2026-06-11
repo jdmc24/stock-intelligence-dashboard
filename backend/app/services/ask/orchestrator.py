@@ -8,7 +8,7 @@ from typing import Any, Awaitable, Callable
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import session_context
-from app.prompts.ask_prompts import SYNTHESIS_SYSTEM
+from app.prompts.ask_prompts import CLAIM_CHECK_SYSTEM, EARNINGS_DRIFT_SYSTEM, SYNTHESIS_SYSTEM
 from app.services.ask.earnings_agent import run_earnings_agent
 from app.services.ask.events import AskEventEmitter
 from app.services.ask.regulations_agent import run_regulations_agent
@@ -84,6 +84,44 @@ _REGULATION_HINTS = (
     "proposed rule",
 )
 
+_CLAIM_CHECK_HINTS = (
+    "claim check",
+    "claim-check",
+    "fact check",
+    "fact-check",
+    "verify",
+    "is it true",
+    "is this true",
+    "does this support",
+    "does the evidence support",
+    "support this claim",
+    "contradict",
+    "debunk",
+    "finfluencer",
+    "stock tip",
+    "headline",
+    "thesis",
+)
+
+_EARNINGS_DRIFT_HINTS = (
+    "narrative drift",
+    "drift",
+    "changed over",
+    "changed across",
+    "evolved over",
+    "evolved across",
+    "tone changed",
+    "guidance changed",
+    "over the last several",
+    "over the last few",
+    "quarter over quarter",
+    "qoq",
+    "more cautious",
+    "less cautious",
+    "intensified",
+    "faded",
+)
+
 
 def parse_intent(question: str, context: dict[str, Any] | None) -> dict[str, Any]:
     ctx = context or {}
@@ -106,6 +144,8 @@ def parse_intent(question: str, context: dict[str, Any] | None) -> dict[str, Any
         unique.append(up)
     tickers = unique[:5]
 
+    is_claim_check = any(h in q_lower for h in _CLAIM_CHECK_HINTS)
+    is_earnings_drift = any(h in q_lower for h in _EARNINGS_DRIFT_HINTS)
     needs_earnings = any(h in q_lower for h in _EARNINGS_HINTS)
 
     topics: list[str] = []
@@ -131,11 +171,18 @@ def parse_intent(question: str, context: dict[str, Any] | None) -> dict[str, Any
         )
     )
 
+    if is_claim_check and tickers:
+        needs_earnings = True
+    if is_earnings_drift and tickers:
+        needs_earnings = True
+
     return {
         "tickers": tickers[:5],
         "topics": topics[:5],
         "needs_earnings": needs_earnings,
         "regulation_id": ctx.get("regulation_id"),
+        "is_claim_check": is_claim_check,
+        "is_earnings_drift": is_earnings_drift,
     }
 
 
@@ -153,6 +200,10 @@ def should_run_earnings(intent: dict[str, Any]) -> bool:
 
 def should_run_regulations(question: str, intent: dict[str, Any]) -> bool:
     """Skip regulations research for earnings-only questions (saves a full agent loop)."""
+    if intent.get("is_earnings_drift"):
+        return False
+    if intent.get("is_claim_check"):
+        return True
     if intent.get("regulation_id"):
         return True
     q = (question or "").lower()
@@ -197,9 +248,23 @@ def build_plan(intent: dict[str, Any], *, run_regulations: bool = True) -> dict[
                 "status": "pending",
             }
         )
-    steps.append(
-        {"id": "synthesize", "agent": "synthesizer", "label": "Write your answer", "status": "pending"}
-    )
+    if intent.get("is_claim_check"):
+        steps.append(
+            {"id": "claim_check", "agent": "claim_check", "label": "Check the claim", "status": "pending"}
+        )
+    elif intent.get("is_earnings_drift"):
+        steps.append(
+            {
+                "id": "earnings_drift",
+                "agent": "earnings_drift",
+                "label": "Analyze narrative drift",
+                "status": "pending",
+            }
+        )
+    else:
+        steps.append(
+            {"id": "synthesize", "agent": "synthesizer", "label": "Write your answer", "status": "pending"}
+        )
     return {"intent": intent, "steps": steps}
 
 
@@ -235,6 +300,12 @@ async def run_ask(
             "run_started",
             question=q,
             phase=(
+                "claim_check"
+                if intent.get("is_claim_check")
+                else
+                "earnings_drift"
+                if intent.get("is_earnings_drift")
+                else
                 "regulations_and_earnings"
                 if run_earnings and run_regulations
                 else "earnings_only"
@@ -463,10 +534,24 @@ async def run_ask(
             )
         )
 
-    await emit(emitter.next("agent_start", agent="synthesizer", label="Writing answer"))
-    answer_payload, in_syn, out_syn = await _synthesize(q, intent, reg_brief, earn_brief)
+    if intent.get("is_claim_check"):
+        await emit(emitter.next("agent_start", agent="claim_check", label="Checking claim"))
+        answer_payload, in_syn, out_syn = await _claim_check(q, intent, reg_brief, earn_brief)
+    elif intent.get("is_earnings_drift"):
+        await emit(emitter.next("agent_start", agent="earnings_drift", label="Analyzing narrative drift"))
+        answer_payload, in_syn, out_syn = await _earnings_drift(q, intent, earn_brief)
+    else:
+        await emit(emitter.next("agent_start", agent="synthesizer", label="Writing answer"))
+        answer_payload, in_syn, out_syn = await _synthesize(q, intent, reg_brief, earn_brief)
 
-    agents_used = ["orchestrator", "synthesizer"]
+    final_agent = (
+        "claim_check"
+        if intent.get("is_claim_check")
+        else "earnings_drift"
+        if intent.get("is_earnings_drift")
+        else "synthesizer"
+    )
+    agents_used = ["orchestrator", final_agent]
     if run_regulations:
         agents_used.insert(1, "regulations")
     if run_earnings:
@@ -474,7 +559,7 @@ async def run_ask(
     answer_payload["agents_used"] = agents_used
 
     await emit(emitter.next("answer", **{k: v for k, v in answer_payload.items() if k != "type"}))
-    await emit(emitter.next("agent_end", agent="synthesizer", status="ok"))
+    await emit(emitter.next("agent_end", agent=final_agent, status="ok"))
 
     status = "ok"
     if run_earnings and earn_brief:
@@ -575,6 +660,174 @@ async def _synthesize(
         "markdown": str(parsed.get("markdown") or ""),
         "citations": citations,
         "limitations": limitations,
+        "follow_up_questions": follow_ups,
+    }, in_t, out_t
+
+
+async def _claim_check(
+    question: str,
+    intent: dict[str, Any],
+    reg_brief: dict[str, Any],
+    earn_brief: dict[str, Any] | None,
+) -> tuple[dict[str, Any], int, int]:
+    citations = _citations_from_briefs(reg_brief, earn_brief)
+    base_limitations = list(reg_brief.get("gaps") or [])
+    if earn_brief:
+        base_limitations.extend(earn_brief.get("gaps") or [])
+    for note in intent.get("prefetch_notes") or []:
+        if note.startswith("Could not fetch") or note.startswith("No earnings") or "skipped" in note.lower():
+            base_limitations.append(note)
+    base_limitations.extend(_earnings_scope_limitations(intent, earn_brief))
+
+    if not settings.anthropic_api_key:
+        md, verdict, confidence = _fallback_claim_check_markdown(question, intent, reg_brief, earn_brief)
+        return {
+            "markdown": md,
+            "verdict": verdict,
+            "confidence": confidence,
+            "citations": citations,
+            "limitations": base_limitations,
+            "follow_up_questions": suggest_follow_up_questions(question, intent, reg_brief, earn_brief),
+        }, 0, 0
+
+    user = "\n".join(
+        [
+            f"Claim to check:\n{question}\n",
+            f"Intent:\n{json.dumps(intent, indent=2)}\n",
+            f"Regulations research brief:\n{json.dumps(_compact_brief(reg_brief), indent=2, default=str)}\n",
+            (
+                f"Earnings research brief:\n{json.dumps(_compact_brief(earn_brief), indent=2, default=str)}\n"
+                if earn_brief
+                else "Earnings research brief: not collected for this claim.\n"
+            ),
+        ]
+    )
+
+    try:
+        parsed, in_t, out_t = await asyncio.to_thread(
+            complete_json_with_usage,
+            CLAIM_CHECK_SYSTEM,
+            user,
+            8192,
+        )
+    except ValueError as e:
+        if "JSON object" not in str(e):
+            raise
+        md, verdict, confidence = _fallback_claim_check_markdown(question, intent, reg_brief, earn_brief)
+        limitations = [*base_limitations, "Claim check synthesized from research briefs after JSON parse failure."]
+        return {
+            "markdown": md,
+            "verdict": verdict,
+            "confidence": confidence,
+            "citations": citations,
+            "limitations": limitations,
+            "follow_up_questions": suggest_follow_up_questions(question, intent, reg_brief, earn_brief),
+        }, 0, 0
+
+    verdict = str(parsed.get("verdict") or "unverifiable").strip().lower()
+    if verdict not in {"supported", "mixed", "weakly_supported", "contradicted", "unverifiable"}:
+        verdict = "unverifiable"
+    confidence = str(parsed.get("confidence") or "low").strip().lower()
+    if confidence not in {"low", "medium", "high"}:
+        confidence = "low"
+    parsed_citations = parsed.get("citations") if isinstance(parsed.get("citations"), list) else citations
+    limitations = parsed.get("limitations") if isinstance(parsed.get("limitations"), list) else []
+    for lim in base_limitations:
+        if lim not in limitations:
+            limitations.append(lim)
+    follow_ups = _normalize_follow_up_questions(parsed.get("follow_up_questions"))
+    if not follow_ups:
+        follow_ups = suggest_follow_up_questions(question, intent, reg_brief, earn_brief)
+    return {
+        "markdown": str(parsed.get("markdown") or ""),
+        "verdict": verdict,
+        "confidence": confidence,
+        "citations": parsed_citations,
+        "limitations": limitations,
+        "follow_up_questions": follow_ups,
+    }, in_t, out_t
+
+
+async def _earnings_drift(
+    question: str,
+    intent: dict[str, Any],
+    earn_brief: dict[str, Any] | None,
+) -> tuple[dict[str, Any], int, int]:
+    empty_reg_brief = {"key_documents": [], "tickers": intent.get("tickers") or []}
+    citations = _citations_from_briefs(empty_reg_brief, earn_brief)
+    limitations = list((earn_brief or {}).get("gaps") or [])
+    for note in intent.get("prefetch_notes") or []:
+        if note.startswith("Could not fetch") or note.startswith("No earnings") or "skipped" in note.lower():
+            limitations.append(note)
+    limitations.extend(_earnings_scope_limitations(intent, earn_brief))
+
+    if not settings.anthropic_api_key:
+        md, drift_direction, confidence = _fallback_earnings_drift_markdown(question, intent, earn_brief)
+        return {
+            "markdown": md,
+            "drift_direction": drift_direction,
+            "confidence": confidence,
+            "citations": citations,
+            "limitations": limitations,
+            "follow_up_questions": suggest_follow_up_questions(
+                question,
+                intent,
+                empty_reg_brief,
+                earn_brief,
+            ),
+        }, 0, 0
+
+    user = "\n".join(
+        [
+            f"User question:\n{question}\n",
+            f"Intent:\n{json.dumps(intent, indent=2)}\n",
+            (
+                f"Earnings research brief:\n{json.dumps(_compact_brief(earn_brief or {}), indent=2, default=str)}\n"
+            ),
+        ]
+    )
+
+    try:
+        parsed, in_t, out_t = await asyncio.to_thread(
+            complete_json_with_usage,
+            EARNINGS_DRIFT_SYSTEM,
+            user,
+            8192,
+        )
+    except ValueError as e:
+        if "JSON object" not in str(e):
+            raise
+        md, drift_direction, confidence = _fallback_earnings_drift_markdown(question, intent, earn_brief)
+        limitations.append("Narrative drift synthesized from research briefs after JSON parse failure.")
+        return {
+            "markdown": md,
+            "drift_direction": drift_direction,
+            "confidence": confidence,
+            "citations": citations,
+            "limitations": limitations,
+            "follow_up_questions": suggest_follow_up_questions(question, intent, empty_reg_brief, earn_brief),
+        }, 0, 0
+
+    drift_direction = str(parsed.get("drift_direction") or "insufficient_history").strip().lower()
+    if drift_direction not in {"improving", "worsening", "mixed", "stable", "insufficient_history"}:
+        drift_direction = "insufficient_history"
+    confidence = str(parsed.get("confidence") or "low").strip().lower()
+    if confidence not in {"low", "medium", "high"}:
+        confidence = "low"
+    parsed_citations = parsed.get("citations") if isinstance(parsed.get("citations"), list) else citations
+    parsed_limitations = parsed.get("limitations") if isinstance(parsed.get("limitations"), list) else []
+    for lim in limitations:
+        if lim not in parsed_limitations:
+            parsed_limitations.append(lim)
+    follow_ups = _normalize_follow_up_questions(parsed.get("follow_up_questions"))
+    if not follow_ups:
+        follow_ups = suggest_follow_up_questions(question, intent, empty_reg_brief, earn_brief)
+    return {
+        "markdown": str(parsed.get("markdown") or ""),
+        "drift_direction": drift_direction,
+        "confidence": confidence,
+        "citations": parsed_citations,
+        "limitations": parsed_limitations,
         "follow_up_questions": follow_ups,
     }, in_t, out_t
 
@@ -724,6 +977,8 @@ def _compact_brief(brief: dict[str, Any]) -> dict[str, Any]:
         compact["key_transcripts"] = (brief.get("key_transcripts") or [])[:4]
     if brief.get("notable_quotes") is not None:
         compact["notable_quotes"] = (brief.get("notable_quotes") or [])[:6]
+    if brief.get("timeline_points") is not None:
+        compact["timeline_points"] = (brief.get("timeline_points") or [])[-8:]
     if brief.get("timeline_point_count") is not None:
         compact["timeline_point_count"] = brief.get("timeline_point_count")
     return compact
@@ -830,3 +1085,158 @@ def _fallback_markdown(
         ]
     )
     return "\n".join(lines)
+
+
+def _fallback_claim_check_markdown(
+    question: str,
+    intent: dict[str, Any],
+    reg_brief: dict[str, Any],
+    earn_brief: dict[str, Any] | None,
+) -> tuple[str, str, str]:
+    docs = reg_brief.get("key_documents") or []
+    transcripts = (earn_brief or {}).get("key_transcripts") or []
+    quotes = (earn_brief or {}).get("notable_quotes") or []
+
+    evidence_count = len(docs) + len(transcripts) + len(quotes)
+    if evidence_count <= 0:
+        verdict = "unverifiable"
+        confidence = "low"
+    elif evidence_count <= 2:
+        verdict = "weakly_supported"
+        confidence = "low"
+    else:
+        verdict = "mixed"
+        confidence = "medium"
+
+    tickers = ", ".join(str(t).upper() for t in (intent.get("tickers") or [])) or "the named company"
+    lines = [
+        f"**Claim check:** {question}",
+        "",
+        f"**Verdict: {verdict.replace('_', ' ').title()}**",
+        "",
+        (
+            f"I found {evidence_count} relevant evidence item(s) for {tickers}, but local deterministic mode "
+            "does not infer strong support or contradiction. Set `ANTHROPIC_API_KEY` for the full Claim Check Agent."
+        ),
+        "",
+        "**Evidence reviewed**",
+    ]
+
+    if not evidence_count:
+        lines.append("- No stored evidence was available to evaluate the claim.")
+
+    for d in docs[:5]:
+        title = d.get("title") or d.get("document_number") or "Regulation"
+        doc_id = d.get("id")
+        why = d.get("why_relevant") or "Potentially relevant regulation."
+        if doc_id:
+            lines.append(f"- Regulation: [{title}](/regulations/{doc_id}) — {why}")
+        else:
+            lines.append(f"- Regulation: {title} — {why}")
+
+    for tr in transcripts[:4]:
+        tid = tr.get("transcript_id")
+        tk = tr.get("ticker") or ""
+        qtr = tr.get("quarter") or "call"
+        tone = tr.get("overall_tone")
+        topics = ", ".join(str(t) for t in (tr.get("top_topics") or [])[:4])
+        detail = f"tone: {tone}" if tone else "analysis available"
+        if topics:
+            detail += f"; topics: {topics}"
+        if tid:
+            lines.append(f"- Earnings: [{tk} {qtr}](/analysis/{tid}) — {detail}")
+        else:
+            lines.append(f"- Earnings: {tk} {qtr} — {detail}")
+
+    for q in quotes[:3]:
+        speaker = q.get("speaker") or "Speaker"
+        excerpt = q.get("excerpt") or ""
+        lines.append(f'- Quote: {speaker}: "{excerpt}"')
+
+    lines.extend(
+        [
+            "",
+            "**Caveats**",
+            "- This is informational research, not investment advice.",
+            "- Deterministic fallback can surface evidence but cannot reliably determine whether it proves or contradicts the claim.",
+        ]
+    )
+    return "\n".join(lines), verdict, confidence
+
+
+def _fallback_earnings_drift_markdown(
+    question: str,
+    intent: dict[str, Any],
+    earn_brief: dict[str, Any] | None,
+) -> tuple[str, str, str]:
+    brief = earn_brief or {}
+    tickers = [str(t).upper() for t in (brief.get("tickers") or intent.get("tickers") or []) if t]
+    ticker = tickers[0] if tickers else "the company"
+    raw_points = brief.get("timeline_points") or []
+    points = [p for p in raw_points if isinstance(p, dict)]
+
+    if len(points) < 2:
+        direction = "insufficient_history"
+        confidence = "low"
+    else:
+        direction = "mixed"
+        confidence = "medium" if len(points) >= 3 else "low"
+
+    lines = [
+        f"**Earnings narrative drift:** {question}",
+        "",
+        f"**Direction: {direction.replace('_', ' ').title()}**",
+        "",
+        brief.get("research_summary") or f"Reviewed stored earnings-call evidence for {ticker}.",
+        "",
+        "**Timeline evidence**",
+    ]
+
+    if not points:
+        lines.append("- No analyzed call timeline points were available.")
+    else:
+        for p in points[-6:]:
+            qtr = p.get("quarter") or "Unknown quarter"
+            tone = p.get("overall_tone") or "tone unavailable"
+            hedging = p.get("hedging_score")
+            guidance = p.get("guidance_count")
+            topics = ", ".join(str(t) for t in (p.get("top_topics") or [])[:5])
+            parts = [f"tone: {tone}"]
+            if hedging is not None:
+                parts.append(f"hedging: {hedging}")
+            if guidance is not None:
+                parts.append(f"guidance items: {guidance}")
+            if topics:
+                parts.append(f"topics: {topics}")
+            lines.append(f"- {qtr}: {'; '.join(parts)}")
+
+    themes = [str(t) for t in (brief.get("narrative_themes") or []) if str(t).strip()]
+    if themes:
+        lines.extend(["", "**Recurring themes**"])
+        for theme in themes[:8]:
+            lines.append(f"- {theme}")
+
+    if len(points) >= 2:
+        first = points[0]
+        last = points[-1]
+        lines.extend(
+            [
+                "",
+                "**What changed**",
+                (
+                    f"- Earliest analyzed point: {first.get('quarter') or 'unknown'}; "
+                    f"latest analyzed point: {last.get('quarter') or 'unknown'}."
+                ),
+                "- Deterministic fallback surfaces the timeline but leaves nuanced interpretation to the full Drift Agent.",
+            ]
+        )
+
+    lines.extend(
+        [
+            "",
+            "**Caveats**",
+            "- This is informational research, not investment advice.",
+            "- Drift confidence improves with at least three analyzed calls and topic-specific quotes.",
+        ]
+    )
+    return "\n".join(lines), direction, confidence

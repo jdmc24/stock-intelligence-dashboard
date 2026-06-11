@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { ASK_AGENT_LABELS, ASK_TOOL_LABELS, type AskEvent } from "@/lib/ask";
 
@@ -62,22 +62,29 @@ function deriveStatus(events: AskEvent[]): { label: string; step: number; total:
 
 export function AskRunProgress({ events, running }: { events: AskEvent[]; running: boolean }) {
   const [elapsed, setElapsed] = useState(0);
-  const startedAt = useMemo(() => {
-    if (!running) return null;
-    return Date.now();
-  }, [running, events[0]?.run_id]);
+  const startedAtRef = useRef<number | null>(null);
+  const runId = events[0]?.run_id;
 
   useEffect(() => {
-    if (!running || startedAt == null) {
-      setElapsed(0);
-      return;
+    if (!running) {
+      startedAtRef.current = null;
+      const resetId = window.setTimeout(() => setElapsed(0), 0);
+      return () => window.clearTimeout(resetId);
     }
-    setElapsed(Math.floor((Date.now() - startedAt) / 1000));
+    let resetId: number | null = null;
+    if (startedAtRef.current == null) {
+      startedAtRef.current = Date.now();
+      resetId = window.setTimeout(() => setElapsed(0), 0);
+    }
+    const startedAt = startedAtRef.current;
     const id = window.setInterval(() => {
       setElapsed(Math.floor((Date.now() - startedAt) / 1000));
     }, 1000);
-    return () => window.clearInterval(id);
-  }, [running, startedAt]);
+    return () => {
+      window.clearInterval(id);
+      if (resetId != null) window.clearTimeout(resetId);
+    };
+  }, [running, runId]);
 
   if (!running) return null;
 

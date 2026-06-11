@@ -8,10 +8,12 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.routers.agents import router as agents_router
 from app.routers.analysis import router as analysis_router
 from app.routers.ask import router as ask_router
 from app.routers.companies import router as companies_router
 from app.routers.company_profiles import router as company_profiles_router
+from app.routers.market_research import router as market_research_router
 from app.routers.regulations import router as regulations_router
 from app.routers.search import router as search_router
 from app.routers.transcripts import router as transcripts_router
@@ -37,7 +39,23 @@ async def lifespan(app: FastAPI):
         scheduler_task = asyncio.create_task(regulatory_scheduler_loop(), name="regulatory_scheduler")
         logger.info("Regulatory scheduler task started (REGULATORY_SCHEDULER_ENABLED=true)")
 
+    market_research_task: asyncio.Task | None = None
+    if settings.market_research_scheduler_enabled:
+        from app.market_research.scheduler import market_research_scheduler_loop
+
+        market_research_task = asyncio.create_task(
+            market_research_scheduler_loop(),
+            name="market_research_scheduler",
+        )
+        logger.info("Market research scheduler task started (MARKET_RESEARCH_SCHEDULER_ENABLED=true)")
+
     yield
+
+    if market_research_task is not None:
+        market_research_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await market_research_task
+        logger.info("Market research scheduler task stopped")
 
     if scheduler_task is not None:
         scheduler_task.cancel()
@@ -69,6 +87,8 @@ app.include_router(search_router)
 app.include_router(regulations_router)
 app.include_router(company_profiles_router)
 app.include_router(ask_router)
+app.include_router(market_research_router)
+app.include_router(agents_router)
 
 
 @app.get("/")
@@ -80,4 +100,3 @@ async def root():
 @app.get("/healthz")
 async def healthz():
     return {"ok": True}
-

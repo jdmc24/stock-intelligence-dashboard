@@ -89,13 +89,16 @@ export default function EarningsToolsPage() {
     const tickers = [...new Set(recent.slice(0, 5).map((x) => x.ticker.trim().toUpperCase()))];
     if (tickers.length === 0) return;
     let cancelled = false;
-    setImpactByTicker((prev) => {
-      const next = { ...prev };
-      tickers.forEach((tk) => {
-        next[tk] = undefined;
+    const resetTimer = window.setTimeout(() => {
+      if (cancelled) return;
+      setImpactByTicker((prev) => {
+        const next = { ...prev };
+        tickers.forEach((tk) => {
+          next[tk] = undefined;
+        });
+        return next;
       });
-      return next;
-    });
+    }, 0);
     (async () => {
       try {
         const batch = await getRegulatoryImpactBatch(tickers, 90);
@@ -120,6 +123,7 @@ export default function EarningsToolsPage() {
     })();
     return () => {
       cancelled = true;
+      window.clearTimeout(resetTimer);
     };
   }, [recent]);
 
@@ -132,14 +136,16 @@ export default function EarningsToolsPage() {
     if (transcript.status === "processing" || !hasReadable) return;
     if (transcriptReadyToastIds.current.has(transcriptId)) return;
     transcriptReadyToastIds.current.add(transcriptId);
-    setToast("Transcript ready — run analysis when you’re ready.");
+    const timer = window.setTimeout(() => setToast("Transcript ready — run analysis when you’re ready."), 0);
+    return () => window.clearTimeout(timer);
   }, [transcript, transcriptId]);
 
   useEffect(() => {
     if (transcript?.status !== "analyzed" || !transcriptId) return;
     if (analyzedToastIds.current.has(transcriptId)) return;
     analyzedToastIds.current.add(transcriptId);
-    setToast("Analysis complete.");
+    const timer = window.setTimeout(() => setToast("Analysis complete."), 0);
+    return () => window.clearTimeout(timer);
   }, [transcript?.status, transcriptId]);
 
   useEffect(() => {

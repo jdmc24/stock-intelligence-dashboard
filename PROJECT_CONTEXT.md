@@ -66,6 +66,10 @@ Frontend renders the full trace as a collapsible **"Agent reasoning"** panel on 
 
 ## Open work (next session candidates)
 
+- **Deploy agent suite**: local code is deploy-ready, but this sandbox is not a Git checkout, Vercel/Railway CLIs are not installed, and `gh auth status` reports an invalid token for `jdmc24`. Push/deploy from the real repo or re-auth/install deploy CLIs, then run `backend/scripts/smoke_agents.py` against Railway.
+- **CI gate added**: `.github/workflows/ci.yml` runs no-cost backend agent routing/compile checks plus frontend lint/build. The existing `evals.yml` remains the paid Anthropic regulatory eval path.
+- **Agent status endpoint**: `GET /api/agents/status` reports Claim Check, Earnings Drift, Product Discovery, and the unified smoke suite. `/research` renders the same agent-suite status.
+- **Product Discovery Agent runtime check**: `/research` was verified locally in the in-app browser against FastAPI on `127.0.0.1:8001`; the page rendered status cards/latest brief with no console errors, and `backend/scripts/smoke_market_research.py` passed without `--trigger`.
 - **Reflection cost**: gate by initial severity (only run reflection on `high`/`critical` drafts), or by document length.
 - **Visual indication on detail page** when reflection actually changed severity (e.g. small badge "adjusted by reflection").
 - **Multi-agent / specialized prompts**: more "theater" than substance for this app — only do if it's part of an interview narrative.

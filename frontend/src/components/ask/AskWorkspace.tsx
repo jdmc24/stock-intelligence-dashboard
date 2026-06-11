@@ -17,6 +17,8 @@ import {
 } from "@/lib/ask";
 
 export const ASK_EXAMPLE_PROMPTS = [
+  "Claim check: is JPM unusually exposed to new banking capital rules?",
+  "How has MSFT's AI narrative drifted over the last several earnings calls?",
   "What recent SEC rules might affect how MSFT discusses AI?",
   "Which Federal Register items overlap JPM's cybersecurity profile?",
   "Summarize high-severity banking regulations from the last 90 days.",

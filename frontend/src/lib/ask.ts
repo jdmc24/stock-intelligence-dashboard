@@ -75,6 +75,8 @@ export const ASK_AGENT_LABELS: Record<string, string> = {
   regulations: "Regulations specialist",
   earnings: "Earnings specialist",
   synthesizer: "Synthesizer",
+  claim_check: "Claim Check Agent",
+  earnings_drift: "Earnings Drift Agent",
 };
 
 function parseSseBlock(block: string): AskEvent | null {

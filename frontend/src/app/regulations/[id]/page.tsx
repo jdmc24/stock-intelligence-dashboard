@@ -26,7 +26,9 @@ export default function RegulationDetailPage() {
   useEffect(() => {
     if (!id) return;
     let cancelled = false;
-    setError(null);
+    const resetTimer = window.setTimeout(() => {
+      if (!cancelled) setError(null);
+    }, 0);
     getRegulatoryDocument(id)
       .then((d) => {
         if (!cancelled) setDoc(d);
@@ -36,6 +38,7 @@ export default function RegulationDetailPage() {
       });
     return () => {
       cancelled = true;
+      window.clearTimeout(resetTimer);
     };
   }, [id]);
 

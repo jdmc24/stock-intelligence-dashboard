@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import uuid
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -175,3 +175,63 @@ class CompanyRegProfile(Base):
         DateTime, default=lambda: dt.datetime.now(dt.UTC), onupdate=lambda: dt.datetime.now(dt.UTC)
     )
 
+
+class MarketResearchItem(Base):
+    """Normalized public source item used for customer-discovery briefs."""
+
+    __tablename__ = "market_research_items"
+    __table_args__ = (UniqueConstraint("source", "source_id", name="uq_market_research_source_item"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    source: Mapped[str] = mapped_column(String(64), index=True)
+    source_id: Mapped[str] = mapped_column(String(128), index=True)
+    url: Mapped[str] = mapped_column(String(2048))
+    title: Mapped[str] = mapped_column(Text)
+    text_excerpt: Mapped[str] = mapped_column(Text)
+    author_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    published_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=lambda: dt.datetime.now(dt.UTC))
+
+
+class MarketResearchInsight(Base):
+    """LLM/heuristic extraction from a source item."""
+
+    __tablename__ = "market_research_insights"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    item_id: Mapped[str] = mapped_column(String(36), ForeignKey("market_research_items.id"), unique=True, index=True)
+    relevance: Mapped[float] = mapped_column(Float, default=0.0, index=True)
+    persona: Mapped[str] = mapped_column(String(64), default="unknown")
+    pain_point: Mapped[str] = mapped_column(Text, default="")
+    current_workaround: Mapped[str] = mapped_column(Text, default="")
+    desired_feature: Mapped[str] = mapped_column(Text, default="")
+    urgency: Mapped[str] = mapped_column(String(16), default="low")
+    willingness_to_pay: Mapped[str] = mapped_column(String(16), default="low")
+    feature_category: Mapped[str] = mapped_column(String(64), default="other", index=True)
+    mentioned_tickers_json: Mapped[str] = mapped_column(Text, default="[]")
+    evidence_summary: Mapped[str] = mapped_column(Text, default="")
+    model_used: Mapped[str] = mapped_column(String(128), default="heuristic")
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=lambda: dt.datetime.now(dt.UTC))
+
+
+class DailyResearchBrief(Base):
+    """Daily market-research brief for product discovery."""
+
+    __tablename__ = "daily_research_briefs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    brief_date: Mapped[dt.date] = mapped_column(Date, unique=True, index=True)
+    title: Mapped[str] = mapped_column(String(256), default="")
+    executive_summary: Mapped[str] = mapped_column(Text, default="")
+    markdown: Mapped[str] = mapped_column(Text, default="")
+    top_pains_json: Mapped[str] = mapped_column(Text, default="[]")
+    suggested_experiments_json: Mapped[str] = mapped_column(Text, default="[]")
+    source_item_count: Mapped[int] = mapped_column(Integer, default=0)
+    insight_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=lambda: dt.datetime.now(dt.UTC))
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime, default=lambda: dt.datetime.now(dt.UTC), onupdate=lambda: dt.datetime.now(dt.UTC)
+    )
