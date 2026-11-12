@@ -77,6 +77,5 @@ async def sse_stream(run: Callable[[AskEventEmitter, EventCallback], Awaitable[N
     finally:
         done.set()
         heartbeat_task.cancel()
-        with asyncio.suppress(asyncio.CancelledError):
-            await heartbeat_task
-        await producer_task
+        producer_task.cancel()
+        await asyncio.gather(heartbeat_task, producer_task, return_exceptions=True)

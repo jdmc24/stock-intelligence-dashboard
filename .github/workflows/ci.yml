@@ -66,6 +66,9 @@ jobs:
       - name: Verify Ask agent routing
         run: python scripts/check_agent_routing.py
 
+      - name: Verify Ask transcript retrieval and streaming
+        run: python -m unittest discover -s tests -p test_ask_retrieval.py
+
   frontend:
     runs-on: ubuntu-latest
     timeout-minutes: 10

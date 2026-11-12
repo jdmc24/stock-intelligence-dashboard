@@ -7,6 +7,8 @@ import {
   ASK_AGENT_LABELS,
   ASK_TOOL_LABELS,
   ASK_TOOLS_BY_AGENT,
+  askToolLabel,
+  pendingAskTools,
   type AskEvent,
 } from "@/lib/ask";
 
@@ -31,18 +33,20 @@ function resolveStepStatus(step: PlanStep, events: AskEvent[], running: boolean)
   if (step.status === "skipped") return "skipped";
   if (step.status === "done") return "done";
 
-  const ended = events.some((e) => e.type === "agent_end" && e.agent === step.agent);
-  if (ended) return "done";
+  const ended = events.find((e) => e.type === "agent_end" && e.agent === step.agent);
+  if (ended) return ended.status === "partial" || ended.status === "error" ? String(ended.status) : "done";
 
   const started = events.some((e) => e.type === "agent_start" && e.agent === step.agent);
   if (started && running) return "running";
-  if (started && !running) return "done";
+  if (started && !running) return "error";
 
   return step.status;
 }
 
 function stepDotClass(status: string): string {
   if (status === "done") return "bg-emerald-500";
+  if (status === "error") return "bg-red-500";
+  if (status === "partial") return "bg-amber-500";
   if (status === "skipped") return "bg-zinc-400";
   if (status === "running") return "animate-pulse bg-teal-500";
   return "bg-zinc-300 dark:bg-zinc-600";
@@ -113,7 +117,8 @@ function UsedToolGroup({ tool, invocations }: { tool: string; invocations: ToolE
     return (
       <div className="rounded-lg border border-violet-400/30 bg-violet-500/5 px-3 py-2 dark:border-violet-700/40 dark:bg-violet-500/10">
         <div className="flex flex-wrap items-center gap-2 text-xs">
-          <span className="font-medium text-zinc-800 dark:text-zinc-200">{label}</span>
+          <span className="font-medium text-zinc-800 dark:text-zinc-200">{askToolLabel(e)}</span>
+          {e.is_error ? <span className="text-red-600 dark:text-red-400">Failed</span> : null}
           {typeof e.duration_ms === "number" ? (
             <span className="ml-auto font-mono text-[11px] text-zinc-500">{formatDuration(e.duration_ms)}</span>
           ) : null}
@@ -150,12 +155,14 @@ function AgentToolSection({
   agent,
   invocations,
   running,
-  isActive,
+  status,
+  pending,
 }: {
   agent: AgentKey;
   invocations: ToolEndEvent[];
   running: boolean;
-  isActive: boolean;
+  status: string;
+  pending: AskEvent[];
 }) {
   const allTools = ASK_TOOLS_BY_AGENT[agent];
   const byTool = groupByTool(invocations);
@@ -164,7 +171,13 @@ function AgentToolSection({
   const usedCount = calledTypes.size;
   const totalMs = invocations.reduce((s, e) => s + (e.duration_ms ?? 0), 0);
 
-  const statusLabel = isActive && running ? "Running…" : usedCount > 0 ? "Done" : running ? "Waiting…" : "Skipped";
+  const statusLabel = {
+    running: "Running…",
+    done: "Done",
+    error: "Failed",
+    partial: "Limited evidence",
+    skipped: "Skipped",
+  }[status] ?? (running ? "Waiting…" : "Skipped");
 
   return (
     <section className="rounded-lg border border-zinc-200/80 dark:border-zinc-800">
@@ -172,13 +185,13 @@ function AgentToolSection({
         <div>
           <p className="text-xs font-semibold text-zinc-800 dark:text-zinc-200">{ASK_AGENT_LABELS[agent]}</p>
           <p className="mt-0.5 text-[11px] text-zinc-500">
-            {usedCount} of {allTools.length} tools used
+            {usedCount} tool{usedCount === 1 ? "" : "s"} completed
             {totalMs > 0 ? <> · {formatDuration(totalMs)}</> : null}
           </p>
         </div>
         <span
           className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium ${
-            isActive && running
+            status === "running"
               ? "bg-teal-500/15 text-teal-800 dark:text-teal-200"
               : usedCount > 0
                 ? "bg-emerald-500/15 text-emerald-800 dark:text-emerald-200"
@@ -188,9 +201,14 @@ function AgentToolSection({
           {statusLabel}
         </span>
       </div>
+      {pending.length > 0 ? (
+        <ul className="space-y-1 px-3 pt-2 text-xs text-teal-700 dark:text-teal-300" aria-live="polite">
+          {pending.map((event) => <li key={event.seq}>{askToolLabel(event)}…</li>)}
+        </ul>
+      ) : null}
 
       <div className="space-y-2 p-3">
-        {isActive && running && usedCount === 0 ? (
+        {status === "running" && !pending.length && usedCount === 0 ? (
           <p className="text-xs text-zinc-500">Starting tools…</p>
         ) : null}
 
@@ -242,17 +260,8 @@ export function OrchestratorTracePanel({
 
   const planIncludesEarnings = (plan?.steps ?? []).some((s) => s.agent === "earnings" && s.status !== "skipped");
 
-  const activeAgent = useMemo(() => {
-    const starts = events.filter((e) => e.type === "agent_start");
-    const ends = new Set(events.filter((e) => e.type === "agent_end").map((e) => String(e.agent)));
-    for (let i = starts.length - 1; i >= 0; i -= 1) {
-      const a = String(starts[i].agent ?? "");
-      if (a === "regulations" || a === "earnings") {
-        if (!ends.has(a)) return a as AgentKey;
-      }
-    }
-    return null;
-  }, [events]);
+  const pendingTools = running ? pendingAskTools(events) : [];
+  const runEnd = events.find((e) => e.type === "run_end");
 
   const invocationsByAgent = useMemo(() => {
     const groups: Record<AgentKey, ToolEndEvent[]> = { regulations: [], earnings: [] };
@@ -294,7 +303,9 @@ export function OrchestratorTracePanel({
           ) : null}
           <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">Orchestrator</h2>
         </div>
-        <p className="mt-0.5 text-xs text-zinc-500">{running ? "Live trace — updates as tools run" : "Run complete"}</p>
+        <p className="mt-0.5 text-xs text-zinc-500">{running ? "Live research activity" : runEnd?.status === "error" ? "Run failed" :
+          runEnd?.status === "partial" ? "Run complete with limited evidence" :
+          runEnd ? "Run complete" : events.length ? "Run interrupted" : "Ask a question to see research activity"}</p>
         {toolEnds.length > 0 ? (
           <p className="mt-2 text-xs text-zinc-600 dark:text-zinc-400">
             <span className="font-medium text-zinc-800 dark:text-zinc-200">{usedToolTypes.size} tool types</span>
@@ -338,7 +349,8 @@ export function OrchestratorTracePanel({
             agent="regulations"
             invocations={invocationsByAgent.regulations}
             running={running}
-            isActive={activeAgent === "regulations"}
+            status={resolvedSteps.find((step) => step.agent === "regulations")?.status ?? "pending"}
+            pending={pendingTools.filter((event) => event.agent === "regulations")}
           />
         ) : null}
 
@@ -347,7 +359,8 @@ export function OrchestratorTracePanel({
             agent="earnings"
             invocations={invocationsByAgent.earnings}
             running={running}
-            isActive={activeAgent === "earnings"}
+            status={resolvedSteps.find((step) => step.agent === "earnings")?.status ?? "pending"}
+            pending={pendingTools.filter((event) => event.agent === "earnings")}
           />
         ) : null}
 
@@ -365,10 +378,6 @@ export function OrchestratorTracePanel({
               {String(e.text ?? "")}
             </p>
           ))}
-
-        {toolEnds.length === 0 && running ? (
-          <p className="text-xs text-zinc-500">Tools will appear here as each specialist runs.</p>
-        ) : null}
 
         {events
           .filter((e) => e.type === "error")

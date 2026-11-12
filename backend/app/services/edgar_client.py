@@ -35,6 +35,13 @@ def _clean_text_from_html(html: str) -> str:
     return "\n".join([ln for ln in lines if ln])
 
 
+def is_earnings_call_text(text: str) -> bool:
+    return bool(
+        re.search(r"\b(?:conference call|earnings call)\b", text, re.I)
+        and re.search(r"(?im)^operator(?:\s*:|[ \t]*$)|question[ -]and[ -]answer session", text)
+    )
+
+
 class EdgarClient:
     """
     V1 approach:
@@ -118,7 +125,7 @@ class EdgarClient:
         url = f"https://data.sec.gov/Archives/edgar/data/{cik_int}/{acc_nodash}/index.json"
         return await self._get_json(url)
 
-    async def fetch_transcript_from_recent_8k(self, ticker: str) -> tuple[str, str | None]:
+    async def fetch_transcript_from_recent_8k(self, ticker: str, *, require_call: bool = False) -> tuple[str, str | None]:
         cik10 = await self.ticker_to_cik(ticker)
         accessions = await self.recent_8k_accessions(cik10)
         if not accessions:
@@ -154,7 +161,8 @@ class EdgarClient:
                 try:
                     doc = await self._get_text(url)
                     text = _clean_text_from_html(doc)
-                    # Transcripts are typically long; this threshold avoids press releases.
+                    if require_call and not is_earnings_call_text(text):
+                        continue
                     if len(text) > 8000:
                         return text, url
                 except Exception:

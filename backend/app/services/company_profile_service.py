@@ -129,6 +129,7 @@ async def ensure_company_reg_profile(
     ticker: str,
     *,
     context_question: str | None = None,
+    company_name: str | None = None,
     commit: bool = True,
 ) -> tuple[CompanyRegProfile | None, bool]:
     """Return an existing profile, or create one with is_auto_generated=True.
@@ -144,12 +145,12 @@ async def ensure_company_reg_profile(
     if existing is not None:
         return existing, False
 
-    company_name = await _company_name_from_transcripts(session, t)
+    company_name = company_name or await _company_name_from_transcripts(session, t)
     payload = await _generate_profile_payload(t, company_name=company_name, context_question=context_question)
 
     profile = CompanyRegProfile(
         ticker=t,
-        name=payload["name"],
+        name=company_name or payload["name"],
         institution_types=json.dumps(payload["institution_types"]),
         primary_products=json.dumps(payload["primary_products"]),
         primary_functions=json.dumps(payload["primary_functions"]),

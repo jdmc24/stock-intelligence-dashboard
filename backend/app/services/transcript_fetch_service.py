@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import logging
 from typing import Any
@@ -15,7 +16,7 @@ from app.services.earningscall_client import (
     fetch_transcript as earningscall_fetch_transcript,
     normalize_earnings_ticker,
 )
-from app.services.edgar_client import EdgarClient, EdgarError
+from app.services.edgar_client import EdgarClient, EdgarError, is_earnings_call_text
 from app.services.sec_ticker_registry import search_sec_companies
 from app.services.comparison_runner import quarter_sort_key
 from app.services.transcript_parser import parse_sections
@@ -254,6 +255,7 @@ async def fetch_transcript_into_db(
     quarter: str | None = None,
     *,
     earningscall_only: bool = False,
+    ask_mode: bool = False,
 ) -> Transcript:
     """Fetch one earnings call, preferring EarningsCall then SEC EDGAR."""
     t_up = normalize_earnings_ticker(ticker)
@@ -263,11 +265,12 @@ async def fetch_transcript_into_db(
     quarter_label = quarter.strip() if quarter else None
     errors: list[str] = []
 
-    if settings.earningcall_api_key:
+    if settings.earningcall_api_key or ask_mode:
         try:
             text, company_name, source_url, speaker_segments, resolved_quarter = await earningscall_fetch_transcript(
                 ticker=t_up,
                 quarter_label=quarter_label,
+                max_quarters=4 if ask_mode else 12,
             )
             return await _persist_transcript(
                 session,
@@ -281,7 +284,7 @@ async def fetch_transcript_into_db(
             )
         except EarningsCallError as e:
             errors.append(f"EarningsCall: {e}")
-            logger.info("EarningsCall fetch failed for %s: %s", t_up, e)
+            logger.info("EarningsCall fetch failed for %s (%s)", t_up, type(e).__name__)
     else:
         errors.append("EarningsCall: EARNINGSCALL_API_KEY not set")
 
@@ -291,10 +294,18 @@ async def fetch_transcript_into_db(
         )
 
     try:
-        text, company_name, source_url, speaker_segments, resolved_quarter = await _fetch_from_edgar(
-            t_up,
-            quarter_label,
-        )
+        if ask_mode:
+            client = EdgarClient()
+            try:
+                text, source_url = await client.fetch_transcript_from_recent_8k(t_up, require_call=True)
+            finally:
+                await client.aclose()
+            company_name = await _company_name_for_ticker(t_up)
+            speaker_segments = resolved_quarter = None
+        else:
+            text, company_name, source_url, speaker_segments, resolved_quarter = await _fetch_from_edgar(
+                t_up, quarter_label
+            )
         return await _persist_transcript(
             session,
             ticker=t_up,
@@ -373,6 +384,52 @@ async def _analyze_newest_raw(session: AsyncSession, ticker: str) -> str | None:
     if newest.status == "analyzed":
         return f"Analysis complete for {t_up} {q_label}."
     return f"Transcript stored for {t_up} {q_label}, but analysis did not finish — quote search still works."
+
+
+async def retrieve_ask_transcripts(
+    session: AsyncSession,
+    ticker: str,
+    *,
+    quarter: str | None = None,
+    history: bool = False,
+) -> list[Transcript]:
+    stored = [
+        tr for tr in await _load_usable_transcripts(session, ticker)
+        if tr.source != "edgar" or is_earnings_call_text(tr.raw_text)
+    ]
+    if quarter:
+        stored = [tr for tr in stored if (tr.quarter or "").upper() == quarter]
+    if not stored:
+        transcript = await fetch_transcript_into_db(
+            session, ticker, quarter, earningscall_only=quarter is not None, ask_mode=True
+        )
+        if len(transcript.raw_text.strip()) > 100:
+            stored.append(transcript)
+    if quarter or not history:
+        return stored[:1]
+
+    by_quarter = {tr.quarter: tr for tr in reversed(stored)}
+    # Historical requests can fill recent gaps with a separate, short budget.
+    if settings.earningcall_api_key and len(by_quarter) < 4:
+        try:
+            async with asyncio.timeout(7):
+                for spec in candidate_quarters(back=4):
+                    label = _quarter_label(spec.year, spec.quarter)
+                    if label in by_quarter:
+                        continue
+                    try:
+                        transcript = await fetch_transcript_into_db(
+                            session, ticker, label, earningscall_only=True, ask_mode=True
+                        )
+                    except TranscriptFetchError:
+                        continue
+                    if len(transcript.raw_text.strip()) > 100:
+                        by_quarter[label] = transcript
+                    if len(by_quarter) >= 4:
+                        break
+        except TimeoutError:
+            pass
+    return _sort_transcripts_newest_first(list(by_quarter.values()))[:4]
 
 
 async def ensure_transcripts_for_ticker(

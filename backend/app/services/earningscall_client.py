@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import re
 from dataclasses import dataclass
@@ -63,6 +64,8 @@ def candidate_quarters(back: int = 10) -> list[QuarterSpec]:
 async def fetch_transcript(
     ticker: str,
     quarter_label: str | None = None,
+    *,
+    max_quarters: int = 12,
 ) -> tuple[str, str | None, str | None, list[dict] | None, str | None]:
     """
     Returns:
@@ -72,6 +75,14 @@ async def fetch_transcript(
     - speaker_segments: list of {speaker, title?, text, is_qa?} if available
     - resolved_quarter: label like Q3-2025 when found
     """
+    return await asyncio.to_thread(_fetch_transcript, ticker, quarter_label, max_quarters)
+
+
+def _fetch_transcript(
+    ticker: str,
+    quarter_label: str | None,
+    max_quarters: int,
+) -> tuple[str, str | None, str | None, list[dict] | None, str | None]:
     try:
         from earningscall import get_company  # type: ignore
         from earningscall.errors import InsufficientApiAccessError  # type: ignore
@@ -99,7 +110,7 @@ async def fetch_transcript(
 
     # Resolve quarter/year
     spec = parse_quarter_label(quarter_label) if quarter_label else None
-    specs = [spec] if spec else candidate_quarters(back=12)
+    specs = [spec] if spec else candidate_quarters(back=max_quarters)
 
     last_err: Exception | None = None
     for s in [x for x in specs if x is not None]:

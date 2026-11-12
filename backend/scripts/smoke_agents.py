@@ -22,6 +22,7 @@ def main() -> int:
     trigger_market_research = "--trigger-market-research" in sys.argv
 
     checks = [
+        ("Ask ticker and transcript retrieval", ["scripts/smoke_ask_retrieval.py"]),
         ("Claim Check Agent", ["scripts/smoke_claim_check.py"]),
         ("Earnings Drift Agent", ["scripts/smoke_earnings_drift.py"]),
         (
