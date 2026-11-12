@@ -27,6 +27,7 @@ REGISTRY = [
     SecCompanyEntry("LLY", "ELI LILLY & CO"),
     SecCompanyEntry("MSFT", "Microsoft Corporation"),
     SecCompanyEntry("NVDA", "NVIDIA Corporation"),
+    SecCompanyEntry("UBER", "Uber Technologies, Inc."),
     SecCompanyEntry("BRK-B", "Berkshire Hathaway Inc."),
     SecCompanyEntry("GOOG", "Alphabet Inc."),
     SecCompanyEntry("GOOGL", "Alphabet Inc."),
@@ -53,6 +54,7 @@ class AskRetrievalTest(unittest.IsolatedAsyncioTestCase):
         self.addAsyncCleanup(self.client.aclose)
 
         self.calendar = AsyncMock(side_effect=lambda ticker, **_: {
+            "UBER": (("Q3-2026", dt.datetime(2026, 11, 1, tzinfo=dt.UTC)),),
             "RACE": (("Q3-2025", dt.datetime(2025, 11, 1, tzinfo=dt.UTC)),),
             "LLY": (("Q3-2026", dt.datetime(2026, 11, 1, tzinfo=dt.UTC)),),
             "NVDA": (("Q3-2027", dt.datetime(2099, 11, 17, tzinfo=dt.UTC)), ("Q2-2027", dt.datetime(2026, 8, 26, tzinfo=dt.UTC)), ("Q3-2026", dt.datetime(2025, 11, 19, tzinfo=dt.UTC))),
@@ -114,6 +116,19 @@ class AskRetrievalTest(unittest.IsolatedAsyncioTestCase):
             )
             self.assertIn("Demand for electric vehicles increased", answer["markdown"])
             self.assertFalse(any(event.get("agent") == "regulations" for event in run))
+
+    async def test_uber_by_name_retrieves_and_cites_earnings(self):
+        with patch.object(transcript_fetch_service, "earningscall_fetch_transcript", new_callable=AsyncMock) as provider:
+            provider.return_value = (
+                "CEO: Mobility demand grew across several regions. " * 8, "Uber", None, None, "Q3-2026"
+            )
+            events = await self.ask("what did uber say on its latest earnings call?")
+            self.assertEqual(provider.call_args.kwargs["ticker"], "UBER")
+        plan = next(event for event in events if event["type"] == "plan")
+        answer = next(event for event in events if event["type"] == "answer")
+        self.assertEqual(plan["intent"]["tickers"], ["UBER"])
+        self.assertIn("Mobility demand grew", answer["markdown"])
+        self.assertTrue(any(c["kind"] == "transcript" for c in answer["citations"]))
 
     async def test_call_overview_reads_management_remarks(self):
         raw = (

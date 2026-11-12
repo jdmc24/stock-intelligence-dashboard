@@ -107,6 +107,7 @@ _COMPANY_ALIASES = {
     "pnc": "PNC",
     "pnc bank": "PNC",
     "tesla": "TSLA",
+    "uber": "UBER",
 }
 _ISSUER_SUFFIX = re.compile(
     r" (?:n v|incorporated|inc|corporation|corp|company|co|limited|ltd|plc|llc|lp|ag|sa|se)$"
