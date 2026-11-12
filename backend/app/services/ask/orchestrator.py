@@ -543,8 +543,9 @@ async def _synthesize(
     user_parts = [
         f"User question:\n{question}\n",
         f"Intent:\n{json.dumps(intent, indent=2)}\n",
-        f"Regulations research brief:\n{json.dumps(_compact_brief(reg_brief), indent=2, default=str)}\n",
     ]
+    if not reg_brief.get("skipped"):
+        user_parts.append(f"Regulations research brief:\n{json.dumps(_compact_brief(reg_brief), indent=2, default=str)}\n")
     if earn_brief:
         user_parts.append(
             f"Earnings research brief:\n{json.dumps(_compact_brief(earn_brief), indent=2, default=str)}\n"
