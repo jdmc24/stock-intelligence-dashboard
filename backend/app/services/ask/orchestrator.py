@@ -14,6 +14,7 @@ from app.db import session_context
 from app.models import Transcript
 from app.prompts.ask_prompts import CLAIM_CHECK_SYSTEM, EARNINGS_DRIFT_SYSTEM, SYNTHESIS_SYSTEM
 from app.services.ask.earnings_agent import run_earnings_agent
+from app.services.ask.earnings_filings import EarningsFiling, fetch_earnings_filing
 from app.services.ask.events import AskEventEmitter
 from app.services.earningscall_client import EarningsCallBusy, parse_quarter_label
 from app.services.ask.regulations_agent import run_regulations_agent
@@ -457,15 +458,16 @@ async def run_ask(
 
     if run_earnings:
         await emit(emitter.next("agent_start", agent="earnings", label="Retrieve and read earnings calls"))
-        transcripts = await _retrieve_earnings(intent, q, emit, emitter)
+        transcripts, filings = await _retrieve_earnings(intent, q, emit, emitter)
         earn_brief = await run_earnings_agent(
-            session, question=q, intent=intent, transcripts=transcripts, emit=emit, emitter=emitter,
+            session, question=q, intent=intent, transcripts=transcripts, filings=filings,
+            emit=emit, emitter=emitter,
         )
         await emit(emitter.next(
             "agent_end", agent="earnings",
             status="partial" if earn_brief["gaps"] else "ok", summary=earn_brief["research_summary"],
         ))
-        if not transcripts and not run_regulations:
+        if not transcripts and not filings and not run_regulations:
             final_agent = "earnings_drift" if intent.get("is_earnings_drift") else "synthesizer"
             await emit(emitter.next("agent_start", agent=final_agent, label="Report earnings coverage"))
             extra = {"drift_direction": "insufficient_history", "confidence": "low"} if intent.get("is_earnings_drift") else {}
@@ -500,7 +502,16 @@ async def run_ask(
     if run_earnings:
         agents_used.insert(-1, "earnings")
     answer_payload["agents_used"] = agents_used
-    quarters = {tr.quarter for tr in transcripts if tr.quarter} if run_earnings else set()
+    quarters = set()
+    if run_earnings:
+        quarters = {item.quarter for item in [*transcripts, *filings] if item.quarter}
+        if filings:
+            source_notes = [
+                f"For **{filing.ticker}**, no call transcript was available for the relevant period. "
+                f"This answer uses the issuer’s **{filing.label}** for the period ended {filing.period_end.isoformat()}."
+                for filing in filings
+            ]
+            answer_payload["markdown"] = "\n\n".join([*source_notes, answer_payload["markdown"]])
     if len(quarters) == 1:
         answer_payload["earnings_quarter"] = next(iter(quarters))
 
@@ -510,7 +521,7 @@ async def run_ask(
     status = "ok"
     if run_earnings and earn_brief:
         gaps = earn_brief.get("gaps") or []
-        if gaps or not (earn_brief.get("key_transcripts") or earn_brief.get("notable_quotes")):
+        if gaps or not (earn_brief.get("key_transcripts") or earn_brief.get("key_filings")):
             status = "partial"
 
     await emit(
@@ -525,12 +536,12 @@ async def run_ask(
 
 async def _retrieve_earnings(
     intent: dict[str, Any], question: str, emit: EventCallback, emitter: AskEventEmitter
-) -> list[Transcript]:
+) -> tuple[list[Transcript], list[EarningsFiling]]:
     tickers = intent["tickers"]
     if not tickers:
         intent["prefetch_notes"] = ["I couldn't identify a company. Include a ticker such as $RACE and try again."]
         await emit(emitter.next("message", level="warn", text=intent["prefetch_notes"][0]))
-        return []
+        return [], []
 
     spec = parse_quarter_label(question)
     requested_quarter = _asked_quarter(question)
@@ -544,7 +555,7 @@ async def _retrieve_earnings(
         re.search(r"\b(?:several|multiple|past|previous|few|last \d+) (?:earnings )?(?:calls|quarters)\b", question, re.I)
     )
 
-    async def retrieve(ticker: str) -> tuple[list[Transcript], str | None]:
+    async def retrieve(ticker: str) -> tuple[list[Transcript], str | None, EarningsFiling | None]:
         inputs = {"ticker": ticker, "quarter": quarter}
         tool = "retrieve_earnings_transcripts"
         await emit(emitter.next("tool_start", agent="earnings", tool=tool, input=inputs))
@@ -578,15 +589,56 @@ async def _retrieve_earnings(
             duration_ms=int((time.monotonic() - started) * 1000),
             output={"found": bool(rows), "count": len(rows), "note": note, "transcript_ids": [tr.id for tr in rows]},
         ))
-        return rows, note
+        missing = re.search(r"\bQ[1-4]-20\d{2}\b", note or "")
+        filing_period = quarter or (missing[0] if rows and missing else None)
+        if not rows or (not history and missing and rows[0].quarter != missing[0]):
+            filing = await _retrieve_filing(ticker, filing_period, emit, emitter)
+            if filing:
+                return [], note, filing
+        return rows, note, None
 
     results = await asyncio.gather(*(retrieve(ticker) for ticker in tickers))
-    intent["prefetch_notes"] = [note for _, note in results if note]
+    intent["prefetch_notes"] = [note for _, note, _ in results if note]
     intent["earnings_coverage"] = {
         ticker: {"stored": len(rows), "newest_quarter": rows[0].quarter if rows else None}
-        for ticker, (rows, _) in zip(tickers, results)
+        for ticker, (rows, _, _) in zip(tickers, results)
     }
-    return [row for rows, _ in results for row in rows]
+    return (
+        [row for rows, _, _ in results for row in rows],
+        [filing for _, _, filing in results if filing is not None],
+    )
+
+
+async def _retrieve_filing(
+    ticker: str, quarter: str | None, emit: EventCallback, emitter: AskEventEmitter,
+) -> EarningsFiling | None:
+    tool = "retrieve_earnings_filings"
+    inputs = {"ticker": ticker, "quarter": quarter}
+    await emit(emitter.next("tool_start", agent="earnings", tool=tool, input=inputs))
+    started = time.monotonic()
+    filing = None
+    failed = False
+    try:
+        async with asyncio.timeout(14):
+            filing = await fetch_earnings_filing(ticker, quarter)
+    except Exception:
+        failed = True
+        logger.warning("Could not retrieve earnings filings for %s", ticker, exc_info=True)
+    output = {
+        "found": filing is not None,
+        "count": int(filing is not None),
+        "note": (
+            f"Found {filing.label} for the period ended {filing.period_end.isoformat()}."
+            if filing else "Could not reach the SEC filing source." if failed else "No matching earnings release or 10-Q found."
+        ),
+    }
+    if filing:
+        output["source_url"] = filing.url
+    await emit(emitter.next(
+        "tool_end", agent="earnings", tool=tool, input=inputs, output=output,
+        is_error=failed, duration_ms=int((time.monotonic() - started) * 1000),
+    ))
+    return filing
 
 
 async def _synthesize(
@@ -963,6 +1015,8 @@ def _compact_brief(brief: dict[str, Any]) -> dict[str, Any]:
     }
     if brief.get("key_documents") is not None:
         compact["key_documents"] = (brief.get("key_documents") or [])[:6]
+    if brief.get("key_filings") is not None:
+        compact["key_filings"] = (brief.get("key_filings") or [])[:5]
     if brief.get("key_transcripts") is not None:
         compact["key_transcripts"] = (brief.get("key_transcripts") or [])[:20]
     if brief.get("notable_quotes") is not None:
@@ -1002,6 +1056,8 @@ def _citations_from_briefs(reg_brief: dict[str, Any], earn_brief: dict[str, Any]
             add("company_profile", tk, tk, f"/company/{tk}")
 
     if earn_brief:
+        for filing in earn_brief.get("key_filings") or []:
+            add(filing["kind"], filing["accession"], f"{filing['ticker']} {filing['quarter'] or filing['period_end']} {filing['label']}", filing["url"])
         for tr in earn_brief.get("key_transcripts") or []:
             if not isinstance(tr, dict):
                 continue
@@ -1043,7 +1099,9 @@ def _fallback_markdown(
             lines.append(f"- [{title}](/regulations/{doc_id})" if doc_id else f"- {title}")
 
     if earn_brief:
-        lines.extend(["", "**Earnings calls**", "", earn_brief.get("research_summary") or "_No earnings summary._"])
+        lines.extend(["", "**Earnings evidence**", "", earn_brief.get("research_summary") or "_No earnings summary._"])
+        for filing in earn_brief.get("key_filings") or []:
+            lines.extend(["", f"**{filing['ticker']} {filing['label']}**", "", *filing["excerpts"]])
         transcripts = earn_brief.get("key_transcripts") or []
         if transcripts:
             lines.append("")
@@ -1070,7 +1128,7 @@ def _fallback_markdown(
     lines.extend(
         [
             "",
-            "_Informational only. For full context, open the linked transcript._",
+            "_Informational only. For full context, open the cited source._",
         ]
     )
     return "\n".join(lines)

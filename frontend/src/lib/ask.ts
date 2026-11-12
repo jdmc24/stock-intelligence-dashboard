@@ -23,7 +23,7 @@ export type AskEvent = {
 };
 
 export type AskCitation = {
-  kind: "regulation" | "company_profile" | "transcript" | "analysis";
+  kind: "regulation" | "company_profile" | "transcript" | "analysis" | "earnings_release" | "sec_filing";
   id: string;
   label: string;
   href: string;
@@ -51,6 +51,7 @@ export const ASK_TOOLS_BY_AGENT: Record<"regulations" | "earnings", readonly str
   ],
   earnings: [
     "retrieve_earnings_transcripts",
+    "retrieve_earnings_filings",
     "read_earnings_transcripts",
     "company_earnings_timeline",
   ],
@@ -58,6 +59,7 @@ export const ASK_TOOLS_BY_AGENT: Record<"regulations" | "earnings", readonly str
 
 export const ASK_TOOL_LABELS: Record<string, string> = {
   retrieve_earnings_transcripts: "Retrieve earnings transcripts",
+  retrieve_earnings_filings: "Retrieve earnings release or Form 10-Q",
   read_earnings_transcripts: "Read transcript passages",
   lookup_company_ticker: "Resolved company name to ticker",
   lookup_company_profile: "Looked up company profile",

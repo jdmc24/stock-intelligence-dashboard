@@ -7,6 +7,7 @@ from typing import Any, Awaitable, Callable
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Transcript
+from app.services.ask.earnings_filings import EarningsFiling
 from app.services.ask.earnings_tools import run_tool_with_events
 
 EventCallback = Callable[[dict[str, Any]], Awaitable[None]]
@@ -66,6 +67,7 @@ async def run_earnings_agent(
     question: str,
     intent: dict[str, Any],
     transcripts: list[Transcript],
+    filings: list[EarningsFiling],
     emit: EventCallback,
     emitter: Any,
 ) -> dict[str, Any]:
@@ -137,13 +139,30 @@ async def run_earnings_agent(
                 point for point in timeline.get("points", []) if point.get("transcript_id") in transcript_ids
             )
 
+    key_filings = []
+    for filing in filings:
+        size = min(7500, 12000 // len(filings))
+        targeted = _topic_passages(filing.text, topic, 2, 1000) if topic else []
+        key_filings.append({
+            "ticker": filing.ticker,
+            "quarter": filing.quarter,
+            "kind": filing.kind,
+            "label": filing.label,
+            "url": filing.url,
+            "accession": filing.accession,
+            "period_end": filing.period_end.isoformat(),
+            "excerpts": [filing.text[:size], *targeted],
+        })
     summary = f"Retrieved {len(transcripts)} earnings call transcript(s)." if transcripts else (
         "No earnings transcript was available for this question."
     )
+    if filings:
+        summary += f" Retrieved {len(filings)} issuer filing(s) as fallback evidence."
     return {
         "research_summary": summary,
-        "tickers": list(dict.fromkeys(tr.ticker for tr in transcripts)),
+        "tickers": list(dict.fromkeys(item.ticker for item in [*transcripts, *filings])),
         "key_transcripts": key_transcripts,
+        "key_filings": key_filings,
         "notable_quotes": quotes,
         "timeline_points": timeline_points,
         "timeline_point_count": len(timeline_points),
