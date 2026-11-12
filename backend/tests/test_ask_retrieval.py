@@ -380,3 +380,35 @@ class EarningsFilingsTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(filing.kind, "sec_filing")
             self.assertIn("2026-07-01 through 2026-09-30): 22 USD", filing.text)
             self.assertIsNone(await earnings_filings.fetch_earnings_filing("BRK-B", "Q4-2026"))
+
+
+    async def test_uses_reported_fiscal_year_for_noncalendar_issuer(self):
+        accession = "0000028917-26-000027"
+        submissions = {"fiscalYearEnd": "0130", "filings": {"recent": {
+            "form": ["10-Q"], "accessionNumber": [accession],
+            "primaryDocument": ["dds-20260801x10q.htm"], "reportDate": ["2026-08-01"],
+            "filingDate": ["2026-08-28"], "items": [""],
+        }}}
+        facts = {"facts": {"us-gaap": {"NetIncomeLoss": {"units": {"USD": [
+            {"accn": accession, "start": "2026-05-03", "end": "2026-08-01",
+             "val": 97700000, "fp": "Q2", "fy": 2026},
+        ]}}}}}
+
+        def handle(request):
+            path = request.url.path
+            if path.startswith("/submissions/"):
+                return httpx.Response(200, json=submissions)
+            if path.startswith("/api/xbrl/companyfacts/"):
+                return httpx.Response(200, json=facts)
+            return httpx.Response(404)
+
+        create_client = httpx.AsyncClient
+        registry = [SecCompanyEntry("DDS", "Dillard’s, Inc.", "28917")]
+        with patch.object(earnings_filings, "load_sec_registry", AsyncMock(return_value=registry)), \
+             patch.object(earnings_filings.httpx, "AsyncClient",
+                          side_effect=lambda **kwargs: create_client(transport=httpx.MockTransport(handle), **kwargs)):
+            filing = await earnings_filings.fetch_earnings_filing("DDS", "Q2-2026")
+            self.assertEqual(filing.quarter, "Q2-2026")
+            self.assertEqual(filing.accession, accession)
+            self.assertIn("97,700,000 USD", filing.text)
+            self.assertIsNone(await earnings_filings.fetch_earnings_filing("DDS", "Q2-2027"))

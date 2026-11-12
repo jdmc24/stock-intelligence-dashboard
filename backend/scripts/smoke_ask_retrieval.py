@@ -82,8 +82,27 @@ def verify_berkshire_filing() -> None:
     print("PASS Berkshire filing fallback", filings[0]["label"], filings[0]["href"])
 
 
+def verify_filing_for_period(
+    company: str, ticker: str, quarter: str, period_end: str, allowed_filing_ids: set[str]
+) -> None:
+    events = ask(f"What did {company} report in its {quarter} earnings call?")
+    answer = next(event for event in events if event["type"] == "answer")
+    plan = next(event for event in events if event["type"] == "plan")
+    citations = answer["citations"]
+    assert plan["intent"]["tickers"] == [ticker]
+    assert answer.get("earnings_quarter") == quarter, answer.get("limitations")
+    assert period_end in answer["markdown"]
+    assert len(citations) == 1 and citations[0]["kind"] in {"sec_filing", "earnings_release"}, citations
+    assert citations[0]["id"] in allowed_filing_ids, citations
+    assert citations[0]["href"].startswith("https://www.sec.gov/Archives/")
+    print("PASS", company, quarter, period_end, citations[0]["label"], citations[0]["href"])
+
+
 if __name__ == "__main__":
     verify_berkshire_filing()
+    verify_filing_for_period(
+        "Dillard’s", "DDS", "Q2-2026", "2026-08-01", {"0000028917-26-000024", "0000028917-26-000027"}
+    )
     verify("what did comcast say on its latest earnings call?", ["CMCSA"], require_transcript=True)
     verify("what did mcdonald’s say on its latest earnings call?", ["MCD"], require_transcript=True)
     verify("what did palantir say on its latest earnings call?", ["PLTR"], require_transcript=True)
