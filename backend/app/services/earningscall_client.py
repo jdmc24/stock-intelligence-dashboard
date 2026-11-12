@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import re
+import time
 from dataclasses import dataclass
 
 
@@ -42,6 +43,48 @@ def parse_quarter_label(label: str) -> QuarterSpec | None:
     if not m or not y:
         return None
     return QuarterSpec(year=int(y.group(1)), quarter=int(m.group(1)))
+
+
+# Refresh provider discovery at most every 15 minutes per issuer.
+_CALL_CACHE_TTL = 900
+_call_cache: dict[str, tuple[float, tuple[tuple[str, dt.date], ...]]] = {}
+
+
+async def recent_published_calls(ticker: str, *, force: bool = False) -> tuple[tuple[str, dt.date], ...]:
+    ticker = normalize_earnings_ticker(ticker)
+    cached = _call_cache.get(ticker)
+    if not force and cached and time.monotonic() - cached[0] < _CALL_CACHE_TTL:
+        return cached[1]
+
+    def discover() -> tuple[tuple[str, dt.date], ...]:
+        from earningscall import get_company
+
+        company = get_company(ticker.lower())
+        if company is None:
+            raise EarningsCallError(f"No earnings calendar for {ticker}.")
+        now = dt.datetime.now(dt.UTC)
+        calls = {}
+        for event in company.events():
+            when = event.conference_date
+            if when is None:
+                continue
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=dt.UTC)
+            if when <= now:
+                label = f"Q{event.quarter}-{event.year}"
+                if label not in calls or when > calls[label]:
+                    calls[label] = when
+        return tuple((label, when.date()) for label, when in sorted(
+            calls.items(), key=lambda item: item[1], reverse=True
+        ))
+
+    try:
+        calls = await asyncio.to_thread(discover)
+    except Exception as exc:
+        raise EarningsCallError(f"Earnings calendar unavailable for {ticker}.") from exc
+    if calls:
+        _call_cache[ticker] = time.monotonic(), calls
+    return calls
 
 
 def candidate_quarters(back: int = 10) -> list[QuarterSpec]:

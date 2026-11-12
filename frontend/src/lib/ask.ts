@@ -33,6 +33,10 @@ export type AskContext = {
   ticker?: string;
   regulation_id?: string;
   lookback_days?: number;
+  follow_up_tickers?: string[];
+  follow_up_earnings?: boolean;
+  follow_up_quarter?: string;
+  previous_question?: string;
 };
 
 export const ASK_TOOLS_BY_AGENT: Record<"regulations" | "earnings", readonly string[]> = {

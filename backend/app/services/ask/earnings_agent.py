@@ -31,7 +31,7 @@ _OPERATOR_HANDOFF = re.compile(r"\bplease go ahead[.!]\s+", re.IGNORECASE)
 def _question_topic(question: str) -> str:
     for match in _TOPIC.finditer(question):
         topic = match[1].strip()
-        if not _CALL_SCOPE.match(topic):
+        if not _CALL_SCOPE.match(topic) and not re.fullmatch(r"Q[1-4](?:[ -]20\d{2})?", topic, re.I):
             return topic
     return ""
 
@@ -98,6 +98,7 @@ async def run_earnings_agent(
                 "transcript_id": tr.id,
                 "ticker": tr.ticker,
                 "quarter": tr.quarter,
+                "call_date": tr.call_date.isoformat() if tr.call_date else None,
                 "has_analysis": tr.status == "analyzed",
             })
             selected = _topic_passages(text, topic, limit, size) if topic else []
