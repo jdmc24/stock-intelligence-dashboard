@@ -55,6 +55,7 @@ _GENERIC_SINGLE = GENERIC_COMPANY_WORDS
 class SecCompanyEntry:
     ticker: str
     title: str
+    cik: str | None = None
 
 
 _registry: list[SecCompanyEntry] | None = None
@@ -131,7 +132,8 @@ async def load_sec_registry(*, force: bool = False) -> list[SecCompanyEntry]:
         title = str(row.get("title") or "").strip()
         if not ticker or not title:
             continue
-        entry = SecCompanyEntry(ticker=ticker, title=title)
+        cik = str(row.get("cik_str") or "").strip()
+        entry = SecCompanyEntry(ticker=ticker, title=title, cik=cik.lstrip("0") if cik.isdigit() else None)
         entries.append(entry)
         index[ticker] = entry
 

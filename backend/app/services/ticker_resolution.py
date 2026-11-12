@@ -93,6 +93,7 @@ _TICKER_STOP = frozenset(
 _COMPANY_ALIASES = {
     "alphabet": "GOOGL",
     "facebook": "META",
+    "pepsi": "PEP",
     "google": "GOOGL",
     "huntington bank": "HBAN",
     "jp morgan": "JPM",
@@ -111,6 +112,10 @@ _MARKED_SYMBOL = re.compile(
 )
 _BARE_SYMBOL = re.compile(r"(?<![\w$])([A-Z]{2,5}(?:[.-][A-Z]{1,2})?)(?!\w)")
 _WORD = re.compile(r"[^\W_]+", re.UNICODE)
+_FUND_TITLE = re.compile(r"\b(?:etf|etn|exchange.traded fund|mutual fund)\b", re.I)
+_PARENT_ENDING = re.compile(r" (?:group|holdings?)$")
+_INNER_APOSTROPHE = re.compile(r"(?<=\w)[’'](?=\w)")
+_NON_COMMON_SYMBOL = re.compile(r"(?:-P[A-Z]*$|-W[A-Z]*$|[-.]U$|[0-9])")
 
 COMPANY_CLARIFICATION_PREFIX = "Which company did you mean by"
 
@@ -197,15 +202,52 @@ def extract_explicit_tickers(text: str, existing: list[str] | None = None) -> li
     return list(dict.fromkeys([*symbols, *(symbol for _, symbol in sorted(matches))]))
 
 
+def _normalized_issuer_name(text: str) -> str:
+    title = re.sub(r"\s+/[^/]*(?:/|$)", " ", text)
+    name = " ".join(_WORD.findall(_INNER_APOSTROPHE.sub("", title).lower()))
+    while (short := _ISSUER_SUFFIX.sub("", name)) != name:
+        name = short
+    return name
+
+
+def _issuer_matches(
+    name: str,
+    matches: set[str],
+    entries: dict[str, SecCompanyEntry],
+    order: dict[str, int],
+    *,
+    exact: bool,
+) -> set[str]:
+    if len(matches) <= 1:
+        return matches
+    if not exact:
+        operating = {t for t in matches if not _FUND_TITLE.search(entries[t].title)}
+        matches = operating or matches
+        parents = {
+            t for t in matches if _PARENT_ENDING.sub("", _normalized_issuer_name(entries[t].title)) == name
+        }
+        matches = parents or matches
+
+    by_issuer: dict[str, list[str]] = {}
+    for ticker in matches:
+        entry = entries[ticker]
+        by_issuer.setdefault(entry.cik or ticker, []).append(ticker)
+    # A call is issuer-level. Prefer ordinary symbols over preferred, warrant and
+    # OTC variants, preserving the SEC feed order when listings are otherwise tied.
+    return {
+        min(symbols, key=lambda t: (
+            bool(_NON_COMMON_SYMBOL.search(t)), len(t) == 5 and t.endswith(("F", "Y")), order[t]
+        ))
+        for symbols in by_issuer.values()
+    }
+
+
 @lru_cache(maxsize=1)
 def _issuer_names(registry: tuple[SecCompanyEntry, ...]) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
     names: dict[str, set[str]] = {}
     prefixes: dict[str, set[str]] = {}
     for entry in registry:
-        title = re.sub(r"\s+/[^/]*/", " ", entry.title)
-        name = " ".join(_WORD.findall(title.lower()))
-        while (short := _ISSUER_SUFFIX.sub("", name)) != name:
-            name = short
+        name = _normalized_issuer_name(entry.title)
         if not name:
             continue
         names.setdefault(name, set()).add(entry.ticker)
@@ -214,6 +256,9 @@ def _issuer_names(registry: tuple[SecCompanyEntry, ...]) -> tuple[dict[str, set[
             prefix = " ".join(parts[:end])
             if len(prefix) >= 3 and parts[end - 1] not in {"a", "and", "of", "the"}:
                 prefixes.setdefault(prefix, set()).add(entry.ticker)
+
+        if len(parts) == 2 and len(parts[1]) >= 4:
+            prefixes.setdefault(parts[1], set()).add(entry.ticker)
 
         initials = "".join(word[0] for word in parts if word not in {"and", "of", "the"})
         if len(initials) >= 2 and initials.upper() == entry.ticker:
@@ -372,6 +417,7 @@ async def resolve_tickers_for_question(
         return tickers[:max_tickers], notes
 
     names, prefixes = _issuer_names(tuple(registry))
+    order = {ticker: rank for rank, ticker in enumerate(entries)}
     words = list(_WORD.finditer(text))
     start = 0
     while start < len(words) and len(tickers) < max_tickers:
@@ -380,8 +426,11 @@ async def resolve_tickers_for_question(
             phrase = text[words[start].start():words[end - 1].end()]
             if re.search(r"[?!;,\n]", phrase):
                 break
-            name = " ".join(word.group().lower() for word in words[start:end])
+            name = " ".join(_WORD.findall(_INNER_APOSTROPHE.sub("", phrase).lower()))
             exact = names.get(name)
+            if not exact and phrase.lower().endswith(".com") and name.endswith(" com"):
+                name = name[:-4]
+                exact = names.get(name)
             alias = _COMPANY_ALIASES.get(name)
             if name in GENERIC_COMPANY_WORDS or name in _NON_ISSUER_WORDS or name.upper() in _TICKER_STOP:
                 continue
@@ -391,7 +440,10 @@ async def resolve_tickers_for_question(
                 continue
             matches = {alias} if alias in entries else exact or prefixes.get(name)
             if matches:
-                candidates.append((end, matches))
+                preferred = matches.intersection(tickers) or _issuer_matches(
+                    name, matches, entries, order, exact=bool(exact),
+                )
+                candidates.append((end, preferred))
         if not candidates:
             start += 1
             continue

@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Transcript, TranscriptSection
 from app.services.analysis_runner import run_analysis as run_transcript_analysis
 from app.services.earningscall_client import (
+    EarningsCallBusy,
     EarningsCallError,
     candidate_quarters,
     fetch_transcript as earningscall_fetch_transcript,
@@ -287,6 +288,8 @@ async def fetch_transcript_into_db(
                 quarter_label=resolved_quarter or quarter_label,
                 call_date=call_date,
             )
+        except EarningsCallBusy:
+            raise
         except EarningsCallError as e:
             errors.append(f"EarningsCall: {e}")
             logger.info("EarningsCall fetch failed for %s (%s)", t_up, type(e).__name__)
@@ -410,6 +413,14 @@ async def retrieve_ask_transcripts(
 
     try:
         calls = await asyncio.wait_for(earnings_call_calendar(ticker, force=force_refresh), timeout=6)
+    except EarningsCallBusy:
+        cached = [
+            tr for tr in stored if not quarter or str(tr.quarter or "").upper().startswith(f"{quarter}-")
+        ]
+        return cached[:4 if history else 1], (
+            f"The transcript provider is temporarily rate-limited for {ticker}."
+            + (" Using the most recent matching call on file." if cached else " Try again shortly.")
+        )
     except (TimeoutError, EarningsCallError):
         calls = ()
     now = dt.datetime.now(dt.UTC)
@@ -431,10 +442,11 @@ async def retrieve_ask_transcripts(
     note = None
     selected = []
     if scheduled:
+        provider_busy = False
         limit = 4 if history else 1
         try:
             async with asyncio.timeout(15):
-                for label, date in scheduled[:limit]:
+                for label, date in scheduled[:limit + 2]:
                     tr = by_quarter.get(label)
                     if tr is None:
                         try:
@@ -445,11 +457,19 @@ async def retrieve_ask_transcripts(
                             continue
                     if len(tr.raw_text.strip()) > 100:
                         selected.append(tr)
+                    if len(selected) >= limit:
+                        break
+        except EarningsCallBusy:
+            provider_busy = True
         except TimeoutError:
             pass
         latest_label = scheduled[0][0]
         if not selected or selected[0].quarter != latest_label:
-            note = f"The transcript for {ticker} {latest_label} could not be retrieved."
+            note = (
+                f"The transcript provider is temporarily rate-limited for {ticker} {latest_label}."
+                if provider_busy
+                else f"The transcript for {ticker} {latest_label} could not be retrieved."
+            )
     else:
         note = f"Could not verify the latest {'fiscal ' + quarter + ' ' if quarter else ''}call for {ticker} with the transcript provider."
 
