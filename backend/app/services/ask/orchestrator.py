@@ -314,8 +314,11 @@ async def run_ask(
                 intent["previous_question"] = ctx["previous_question"]
             if ctx.get("follow_up_earnings") and not any(hint in lower for hint in _REGULATION_HINTS):
                 intent["needs_earnings"] = True
-                if not quarter_match and not asks_for_latest and ctx.get("follow_up_quarter"):
-                    intent["follow_up_quarter"] = ctx["follow_up_quarter"]
+                prior_period = ctx.get("follow_up_quarter")
+                if prior_period and quarter_match:
+                    intent["follow_up_quarter"] = f"Q{quarter_match[1]}-{prior_period.split('-')[1]}"
+                elif prior_period and not asks_for_latest:
+                    intent["follow_up_quarter"] = prior_period
     if resolved_tickers and quarter_match:
         intent["needs_earnings"] = True
     intent["force_earnings_refresh"] = asks_for_latest and bool(ctx.get("follow_up_tickers"))
@@ -499,8 +502,7 @@ async def _retrieve_earnings(
     bare_quarter = re.search(r"\bQ([1-4])\b", question, re.I)
     quarter = (
         f"Q{spec.quarter}-{spec.year}" if spec
-        else f"Q{bare_quarter[1]}" if bare_quarter
-        else intent.get("follow_up_quarter")
+        else intent.get("follow_up_quarter") or (f"Q{bare_quarter[1]}" if bare_quarter else None)
     )
     history = bool(intent.get("is_earnings_drift")) or bool(
         re.search(r"\b(?:several|multiple|past|previous|few|last \d+) (?:earnings )?(?:calls|quarters)\b", question, re.I)

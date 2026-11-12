@@ -15,7 +15,7 @@ from app.services.earningscall_client import (
     candidate_quarters,
     fetch_transcript as earningscall_fetch_transcript,
     normalize_earnings_ticker,
-    recent_published_calls,
+    earnings_call_calendar,
 )
 from app.services.edgar_client import EdgarClient, EdgarError, is_earnings_call_text
 from app.services.sec_ticker_registry import search_sec_companies
@@ -404,19 +404,30 @@ async def retrieve_ask_transcripts(
         if tr.source != "edgar" or is_earnings_call_text(tr.raw_text)
     ]
     by_quarter = {str(tr.quarter or "").upper(): tr for tr in reversed(stored)}
-    if quarter and len(quarter) > 2:
-        if quarter in by_quarter:
-            return [by_quarter[quarter]], None
-        transcript = await fetch_transcript_into_db(session, ticker, quarter, earningscall_only=True, ask_mode=True)
-        return ([transcript] if len(transcript.raw_text.strip()) > 100 else []), None
+    exact_quarter = bool(quarter and len(quarter) > 2)
+    if exact_quarter and quarter in by_quarter:
+        return [by_quarter[quarter]], None
 
-    # A bare Q3 means the most recent completed fiscal Q3 for this issuer.
-    cached = [tr for tr in stored if not quarter or str(tr.quarter or "").upper().startswith(f"{quarter}-")]
     try:
-        calls = await asyncio.wait_for(recent_published_calls(ticker, force=force_refresh), timeout=6)
+        calls = await asyncio.wait_for(earnings_call_calendar(ticker, force=force_refresh), timeout=6)
     except (TimeoutError, EarningsCallError):
         calls = ()
-    scheduled = [(label, date) for label, date in calls if not quarter or label.startswith(f"{quarter}-")]
+    now = dt.datetime.now(dt.UTC)
+    if exact_quarter:
+        when = next((date for label, date in calls if label == quarter), None)
+        if when and when > now:
+            return [], f"{ticker} {quarter} is scheduled for {when.date().isoformat()}. The call has not happened yet."
+        transcript = await fetch_transcript_into_db(
+            session, ticker, quarter, earningscall_only=True, ask_mode=True, call_date=when.date() if when else None,
+        )
+        return ([transcript] if len(transcript.raw_text.strip()) > 100 else []), None
+
+    # Without a fiscal year in context, use the latest completed call matching the quarter.
+    cached = [tr for tr in stored if not quarter or str(tr.quarter or "").upper().startswith(f"{quarter}-")]
+    scheduled = [
+        (label, when.date()) for label, when in calls
+        if when <= now and (not quarter or label.startswith(f"{quarter}-"))
+    ]
     note = None
     selected = []
     if scheduled:

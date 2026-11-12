@@ -53,12 +53,12 @@ class AskRetrievalTest(unittest.IsolatedAsyncioTestCase):
         self.addAsyncCleanup(self.client.aclose)
 
         self.calendar = AsyncMock(side_effect=lambda ticker, **_: {
-            "RACE": (("Q3-2025", dt.date(2025, 11, 1)),),
-            "LLY": (("Q3-2026", dt.date(2026, 11, 1)),),
-            "NVDA": (("Q2-2027", dt.date(2026, 8, 26)), ("Q3-2026", dt.date(2025, 11, 19))),
+            "RACE": (("Q3-2025", dt.datetime(2025, 11, 1, tzinfo=dt.UTC)),),
+            "LLY": (("Q3-2026", dt.datetime(2026, 11, 1, tzinfo=dt.UTC)),),
+            "NVDA": (("Q3-2027", dt.datetime(2099, 11, 17, tzinfo=dt.UTC)), ("Q2-2027", dt.datetime(2026, 8, 26, tzinfo=dt.UTC)), ("Q3-2026", dt.datetime(2025, 11, 19, tzinfo=dt.UTC))),
         }.get(ticker, ()))
         for target, name, replacement in (
-            (transcript_fetch_service, "recent_published_calls", self.calendar),
+            (transcript_fetch_service, "earnings_call_calendar", self.calendar),
             (ticker_resolution, "load_sec_registry", AsyncMock(return_value=REGISTRY)),
             (orchestrator, "session_context", self.sessions),
             (orchestrator.settings, "anthropic_api_key", None),
@@ -170,8 +170,9 @@ class AskRetrievalTest(unittest.IsolatedAsyncioTestCase):
             await self.ask("What about data center demand?", context)
             follow_up = await self.ask("Are you sure that's the most recent earnings transcript? How about Q3?", context)
             answer = next(event for event in follow_up if event["type"] == "answer")
-            self.assertEqual(answer["earnings_quarter"], "Q3-2026")
-            self.assertEqual([call.kwargs["quarter_label"] for call in provider.await_args_list], ["Q2-2027", "Q3-2026"])
+            self.assertIn("Q3-2027 is scheduled", answer["markdown"])
+            self.assertEqual(answer["citations"], [])
+            self.assertEqual([call.kwargs["quarter_label"] for call in provider.await_args_list], ["Q2-2027"])
             self.calendar.assert_awaited_with("NVDA", force=True)
 
     async def test_unavailable_latest_is_labeled_as_cached(self):

@@ -60,9 +60,16 @@ def verify_nvidia_follow_up() -> None:
     plan = next(event for event in follow_up if event["type"] == "plan")
     answer = next(event for event in follow_up if event["type"] == "answer")
     assert plan["intent"]["tickers"] == ["NVDA"]
-    assert answer.get("earnings_quarter", "").startswith("Q3-"), answer.get("limitations")
-    assert any(citation["kind"] == "transcript" for citation in answer["citations"])
-    print(f"PASS NVIDIA refresh and typed Q3 follow-up ({latest['earnings_quarter']} → {answer['earnings_quarter']})")
+    expected = f"Q3-{latest['earnings_quarter'].split('-')[1]}"
+    read = next(event for event in follow_up if event.get("tool") == "retrieve_earnings_transcripts"
+                and event["type"] == "tool_end")
+    assert read["input"]["quarter"] == expected
+    if answer.get("earnings_quarter"):
+        assert answer["earnings_quarter"] == expected
+        assert any(citation["kind"] == "transcript" for citation in answer["citations"])
+    else:
+        assert expected in answer["markdown"] and not answer["citations"], answer["markdown"]
+    print(f"PASS NVIDIA refresh and typed Q3 follow-up ({latest['earnings_quarter']} → {expected})")
 
 
 if __name__ == "__main__":

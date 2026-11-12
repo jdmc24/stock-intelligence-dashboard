@@ -47,22 +47,21 @@ def parse_quarter_label(label: str) -> QuarterSpec | None:
 
 # Refresh provider discovery at most every 15 minutes per issuer.
 _CALL_CACHE_TTL = 900
-_call_cache: dict[str, tuple[float, tuple[tuple[str, dt.date], ...]]] = {}
+_call_cache: dict[str, tuple[float, tuple[tuple[str, dt.datetime], ...]]] = {}
 
 
-async def recent_published_calls(ticker: str, *, force: bool = False) -> tuple[tuple[str, dt.date], ...]:
+async def earnings_call_calendar(ticker: str, *, force: bool = False) -> tuple[tuple[str, dt.datetime], ...]:
     ticker = normalize_earnings_ticker(ticker)
     cached = _call_cache.get(ticker)
     if not force and cached and time.monotonic() - cached[0] < _CALL_CACHE_TTL:
         return cached[1]
 
-    def discover() -> tuple[tuple[str, dt.date], ...]:
+    def discover() -> tuple[tuple[str, dt.datetime], ...]:
         from earningscall import get_company
 
         company = get_company(ticker.lower())
         if company is None:
             raise EarningsCallError(f"No earnings calendar for {ticker}.")
-        now = dt.datetime.now(dt.UTC)
         calls = {}
         for event in company.events():
             when = event.conference_date
@@ -70,13 +69,10 @@ async def recent_published_calls(ticker: str, *, force: bool = False) -> tuple[t
                 continue
             if when.tzinfo is None:
                 when = when.replace(tzinfo=dt.UTC)
-            if when <= now:
-                label = f"Q{event.quarter}-{event.year}"
-                if label not in calls or when > calls[label]:
-                    calls[label] = when
-        return tuple((label, when.date()) for label, when in sorted(
-            calls.items(), key=lambda item: item[1], reverse=True
-        ))
+            label = f"Q{event.quarter}-{event.year}"
+            if label not in calls or when > calls[label]:
+                calls[label] = when
+        return tuple(sorted(calls.items(), key=lambda item: item[1], reverse=True))
 
     try:
         calls = await asyncio.to_thread(discover)
