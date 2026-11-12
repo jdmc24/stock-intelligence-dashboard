@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import json
 import unittest
 from unittest.mock import AsyncMock, patch
@@ -25,6 +26,7 @@ REGISTRY = [
     SecCompanyEntry("RACE", "Ferrari N.V."),
     SecCompanyEntry("LLY", "ELI LILLY & CO"),
     SecCompanyEntry("MSFT", "Microsoft Corporation"),
+    SecCompanyEntry("NVDA", "NVIDIA Corporation"),
     SecCompanyEntry("BRK-B", "Berkshire Hathaway Inc."),
     SecCompanyEntry("GOOG", "Alphabet Inc."),
     SecCompanyEntry("GOOGL", "Alphabet Inc."),
@@ -50,7 +52,13 @@ class AskRetrievalTest(unittest.IsolatedAsyncioTestCase):
         self.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
         self.addAsyncCleanup(self.client.aclose)
 
+        self.calendar = AsyncMock(side_effect=lambda ticker, **_: {
+            "RACE": (("Q3-2025", dt.datetime(2025, 11, 1, tzinfo=dt.UTC)),),
+            "LLY": (("Q3-2026", dt.datetime(2026, 11, 1, tzinfo=dt.UTC)),),
+            "NVDA": (("Q3-2027", dt.datetime(2099, 11, 17, tzinfo=dt.UTC)), ("Q2-2027", dt.datetime(2026, 8, 26, tzinfo=dt.UTC)), ("Q3-2026", dt.datetime(2025, 11, 19, tzinfo=dt.UTC))),
+        }.get(ticker, ()))
         for target, name, replacement in (
+            (transcript_fetch_service, "earnings_call_calendar", self.calendar),
             (ticker_resolution, "load_sec_registry", AsyncMock(return_value=REGISTRY)),
             (orchestrator, "session_context", self.sessions),
             (orchestrator.settings, "anthropic_api_key", None),
@@ -59,8 +67,8 @@ class AskRetrievalTest(unittest.IsolatedAsyncioTestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-    async def ask(self, question):
-        response = await self.client.post("/api/ask/stream", json={"question": question})
+    async def ask(self, question, context=None):
+        response = await self.client.post("/api/ask/stream", json={"question": question, "context": context})
         self.assertEqual(response.status_code, 200)
         events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
         self.assertEqual(events[-1]["type"], "run_end")
@@ -143,6 +151,43 @@ class AskRetrievalTest(unittest.IsolatedAsyncioTestCase):
         answer = next(event for event in events if event["type"] == "answer")
         self.assertIn("Q2-2025", answer["markdown"])
         self.assertEqual(answer["citations"], [])
+        self.assertEqual(events[-1]["status"], "partial")
+
+    async def test_refresh_and_free_form_follow_up_use_fiscal_periods(self):
+        async with self.sessions() as session:
+            session.add(Transcript(ticker="NVDA", quarter="Q4-2026", source="earningscall",
+                                   raw_text="CEO: Previous call remarks. " * 8, status="raw"))
+            await session.commit()
+        with patch.object(transcript_fetch_service, "earningscall_fetch_transcript", new_callable=AsyncMock) as provider:
+            provider.side_effect = lambda **kw: (
+                "CEO: Data center demand increased. " * 8, "NVIDIA", None, None, kw["quarter_label"]
+            )
+            initial = await self.ask("Summarize NVIDIA's latest earnings call")
+            answer = next(event for event in initial if event["type"] == "answer")
+            self.assertEqual(answer["earnings_quarter"], "Q2-2027")
+            context = {"follow_up_tickers": ["NVDA"], "follow_up_earnings": True,
+                       "follow_up_quarter": answer["earnings_quarter"], "previous_question": "Summarize NVIDIA's latest earnings call"}
+            await self.ask("What about data center demand?", context)
+            spelled = await self.ask("What about the second quarter?", context)
+            self.assertEqual(next(event for event in spelled if event["type"] == "answer")["earnings_quarter"], "Q2-2027")
+            follow_up = await self.ask("Are you sure that's the most recent earnings transcript? How about Q3?", context)
+            answer = next(event for event in follow_up if event["type"] == "answer")
+            self.assertIn("Q3-2027 is scheduled", answer["markdown"])
+            self.assertEqual(answer["citations"], [])
+            self.assertEqual([call.kwargs["quarter_label"] for call in provider.await_args_list], ["Q2-2027"])
+            self.calendar.assert_awaited_with("NVDA", force=True)
+
+    async def test_unavailable_latest_is_labeled_as_cached(self):
+        async with self.sessions() as session:
+            session.add(Transcript(ticker="NVDA", quarter="Q4-2026", source="earningscall",
+                                   raw_text="CEO: Previous call remarks. " * 8, status="raw"))
+            await session.commit()
+        with patch.object(transcript_fetch_service, "earningscall_fetch_transcript", new_callable=AsyncMock) as provider:
+            provider.side_effect = transcript_fetch_service.EarningsCallError("not available")
+            events = await self.ask("What did NVDA say on its latest call?")
+        answer = next(event for event in events if event["type"] == "answer")
+        self.assertEqual(answer["earnings_quarter"], "Q4-2026")
+        self.assertTrue(any("Q2-2027" in limit and "on file" in limit for limit in answer["limitations"]))
         self.assertEqual(events[-1]["status"], "partial")
 
     async def test_timeout_reports_gap_without_synthesizing_earnings(self):

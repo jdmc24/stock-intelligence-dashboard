@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -242,6 +242,10 @@ class AskContextIn(BaseModel):
     ticker: str | None = Field(default=None, max_length=16)
     regulation_id: str | None = Field(default=None, max_length=64)
     lookback_days: int = Field(default=90, ge=1, le=365)
+    follow_up_tickers: list[Annotated[str, Field(max_length=16)]] = Field(default_factory=list, max_length=5)
+    follow_up_earnings: bool = False
+    follow_up_quarter: str | None = Field(default=None, pattern=r"^Q[1-4]-20\d{2}$")
+    previous_question: str | None = Field(default=None, max_length=500)
 
     model_config = {"extra": "forbid"}
 

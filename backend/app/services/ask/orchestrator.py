@@ -69,6 +69,7 @@ _EARNINGS_HINTS = (
 
 _REGULATION_HINTS = (
     "regulation",
+    "regulations",
     "regulatory",
     "federal register",
     "rule",
@@ -129,6 +130,24 @@ _EARNINGS_DRIFT_HINTS = (
     "intensified",
     "faded",
 )
+
+
+_SPELLED_QUARTERS = {"first": 1, "second": 2, "third": 3, "fourth": 4}
+
+
+def _asked_quarter(question: str) -> int | None:
+    symbol = re.search(r"\bQ([1-4])\b", question, re.I)
+    if symbol:
+        return int(symbol[1])
+    name = re.search(r"\b(first|second|third|fourth)[ -]quarter\b", question, re.I)
+    return _SPELLED_QUARTERS[name[1].lower()] if name else None
+
+
+def _has_regulatory_hint(question: str) -> bool:
+    return any(
+        re.search(rf"(?<!\w){re.escape(hint.strip())}(?!\w)", question)
+        for hint in _REGULATION_HINTS
+    )
 
 
 def parse_intent(question: str, context: dict[str, Any] | None) -> dict[str, Any]:
@@ -215,11 +234,11 @@ def should_run_regulations(question: str, intent: dict[str, Any]) -> bool:
     if intent.get("regulation_id"):
         return True
     q = (question or "").lower()
-    if any(h in q for h in _REGULATION_HINTS):
+    if _has_regulatory_hint(q):
         return True
     if "how might" in q and any(h in q for h in ("rule", "regulation", "regulatory", "compliance", "law")):
         return True
-    if intent.get("needs_earnings") and not any(h in q for h in _REGULATION_HINTS):
+    if intent.get("needs_earnings") and not _has_regulatory_hint(q):
         return False
     return True
 
@@ -291,14 +310,38 @@ async def run_ask(
         await emit(emitter.next("run_end", status="error"))
         return
 
-    intent = parse_intent(q, context)
+    ctx = context or {}
+    intent = parse_intent(q, ctx)
 
     await emit(emitter.next("message", level="info", text="Identifying companies in your question…"))
     resolved_tickers, ticker_notes = await resolve_tickers_for_question(
         session,
         q,
-        [str(context["ticker"])] if context and context.get("ticker") else None,
+        [ctx["ticker"]] if ctx.get("ticker") and not ctx.get("follow_up_tickers") else None,
     )
+    lower = q.lower()
+    requested_quarter = _asked_quarter(q)
+    regulatory = _has_regulatory_hint(lower)
+    asks_for_latest = bool(re.search(r"\b(?:latest|most recent|newest|more recent|newer)\b", lower))
+    if not resolved_tickers and ctx.get("follow_up_tickers") and (
+        not regulatory
+        or re.search(r"\b(?:it|its|they|their|this company|that company)\b", lower)
+    ):
+        resolved_tickers, _ = await resolve_tickers_for_question(session, "", ctx["follow_up_tickers"])
+        if resolved_tickers:
+            await emit(emitter.next("message", level="info", text=f"Following up on {', '.join(resolved_tickers)}."))
+            if ctx.get("previous_question"):
+                intent["previous_question"] = ctx["previous_question"]
+            if ctx.get("follow_up_earnings") and not regulatory:
+                intent["needs_earnings"] = True
+                prior_period = ctx.get("follow_up_quarter")
+                if prior_period and requested_quarter:
+                    intent["follow_up_quarter"] = f"Q{requested_quarter}-{prior_period.split('-')[1]}"
+                elif prior_period and not asks_for_latest:
+                    intent["follow_up_quarter"] = prior_period
+    if resolved_tickers and requested_quarter:
+        intent["needs_earnings"] = True
+    intent["force_earnings_refresh"] = asks_for_latest and bool(ctx.get("follow_up_tickers"))
     intent["tickers"] = resolved_tickers
     if resolved_tickers and (intent["is_earnings_drift"] or intent["is_claim_check"]):
         intent["needs_earnings"] = True
@@ -443,6 +486,9 @@ async def run_ask(
     if run_earnings:
         agents_used.insert(-1, "earnings")
     answer_payload["agents_used"] = agents_used
+    quarters = {tr.quarter for tr in transcripts if tr.quarter} if run_earnings else set()
+    if len(quarters) == 1:
+        answer_payload["earnings_quarter"] = next(iter(quarters))
 
     await emit(emitter.next("answer", **{k: v for k, v in answer_payload.items() if k != "type"}))
     await emit(emitter.next("agent_end", agent=final_agent, status="ok"))
@@ -473,7 +519,13 @@ async def _retrieve_earnings(
         return []
 
     spec = parse_quarter_label(question)
-    quarter = f"Q{spec.quarter}-{spec.year}" if spec else None
+    requested_quarter = _asked_quarter(question)
+    explicit_year = re.search(r"\b(?:FY\s*)?(20\d{2})\b", question, re.I)
+    quarter = (
+        f"Q{spec.quarter}-{spec.year}" if spec
+        else f"Q{requested_quarter}-{explicit_year[1]}" if requested_quarter and explicit_year
+        else intent.get("follow_up_quarter") or (f"Q{requested_quarter}" if requested_quarter else None)
+    )
     history = bool(intent.get("is_earnings_drift")) or bool(
         re.search(r"\b(?:several|multiple|past|previous|few|last \d+) (?:earnings )?(?:calls|quarters)\b", question, re.I)
     )
@@ -488,7 +540,10 @@ async def _retrieve_earnings(
         rows: list[Transcript] = []
         try:
             async with asyncio.timeout(_EARNINGS_RETRIEVAL_TIMEOUT), session_context() as isolated:
-                rows = await retrieve_ask_transcripts(isolated, ticker, quarter=quarter, history=history)
+                rows, note = await retrieve_ask_transcripts(
+                    isolated, ticker, quarter=quarter, history=history,
+                    force_refresh=bool(intent.get("force_earnings_refresh")),
+                )
         except TimeoutError:
             error = True
             note = f"Earnings transcript retrieval timed out for {ticker}. Try again."
@@ -585,13 +640,9 @@ async def _synthesize(
         else _citations_from_briefs(reg_brief, earn_brief)
     )
     limitations = parsed.get("limitations") if isinstance(parsed.get("limitations"), list) else []
-    for note in intent.get("prefetch_notes") or []:
-        if note.startswith("Could not fetch") or note.startswith("No earnings") or "skipped" in note.lower():
-            if note not in limitations:
-                limitations.append(note)
-    for scope_note in _earnings_scope_limitations(intent, earn_brief):
-        if scope_note not in limitations:
-            limitations.append(scope_note)
+    for note in [*(earn_brief or {}).get("gaps", []), *_earnings_scope_limitations(intent, earn_brief)]:
+        if note not in limitations:
+            limitations.append(note)
     follow_ups = _normalize_follow_up_questions(parsed.get("follow_up_questions"))
     if not follow_ups:
         follow_ups = suggest_follow_up_questions(question, intent, reg_brief, earn_brief)

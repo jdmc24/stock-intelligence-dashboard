@@ -15,6 +15,7 @@ from app.services.earningscall_client import (
     candidate_quarters,
     fetch_transcript as earningscall_fetch_transcript,
     normalize_earnings_ticker,
+    earnings_call_calendar,
 )
 from app.services.edgar_client import EdgarClient, EdgarError, is_earnings_call_text
 from app.services.sec_ticker_registry import search_sec_companies
@@ -140,11 +141,13 @@ async def _persist_transcript(
     source_url: str | None,
     speaker_segments: list[dict] | None,
     quarter_label: str | None,
+    call_date: dt.date | None = None,
 ) -> Transcript:
     t_up = normalize_earnings_ticker(ticker)
     transcript = Transcript(
         ticker=t_up,
         quarter=quarter_label,
+        call_date=call_date,
         company_name=company_name,
         source=source,
         source_url=source_url,
@@ -256,6 +259,7 @@ async def fetch_transcript_into_db(
     *,
     earningscall_only: bool = False,
     ask_mode: bool = False,
+    call_date: dt.date | None = None,
 ) -> Transcript:
     """Fetch one earnings call, preferring EarningsCall then SEC EDGAR."""
     t_up = normalize_earnings_ticker(ticker)
@@ -281,6 +285,7 @@ async def fetch_transcript_into_db(
                 source_url=source_url,
                 speaker_segments=speaker_segments,
                 quarter_label=resolved_quarter or quarter_label,
+                call_date=call_date,
             )
         except EarningsCallError as e:
             errors.append(f"EarningsCall: {e}")
@@ -392,44 +397,75 @@ async def retrieve_ask_transcripts(
     *,
     quarter: str | None = None,
     history: bool = False,
-) -> list[Transcript]:
+    force_refresh: bool = False,
+) -> tuple[list[Transcript], str | None]:
     stored = [
         tr for tr in await _load_usable_transcripts(session, ticker)
         if tr.source != "edgar" or is_earnings_call_text(tr.raw_text)
     ]
-    if quarter:
-        stored = [tr for tr in stored if (tr.quarter or "").upper() == quarter]
-    if not stored:
-        transcript = await fetch_transcript_into_db(
-            session, ticker, quarter, earningscall_only=quarter is not None, ask_mode=True
-        )
-        if len(transcript.raw_text.strip()) > 100:
-            stored.append(transcript)
-    if quarter or not history:
-        return stored[:1]
+    by_quarter = {str(tr.quarter or "").upper(): tr for tr in reversed(stored)}
+    exact_quarter = bool(quarter and len(quarter) > 2)
+    if exact_quarter and quarter in by_quarter:
+        return [by_quarter[quarter]], None
 
-    by_quarter = {tr.quarter: tr for tr in reversed(stored)}
-    # Historical requests can fill recent gaps with a separate, short budget.
-    if settings.earningcall_api_key and len(by_quarter) < 4:
+    try:
+        calls = await asyncio.wait_for(earnings_call_calendar(ticker, force=force_refresh), timeout=6)
+    except (TimeoutError, EarningsCallError):
+        calls = ()
+    now = dt.datetime.now(dt.UTC)
+    if exact_quarter:
+        when = next((date for label, date in calls if label == quarter), None)
+        if when and when > now:
+            return [], f"{ticker} {quarter} is scheduled for {when.date().isoformat()}. The call has not happened yet."
+        transcript = await fetch_transcript_into_db(
+            session, ticker, quarter, earningscall_only=True, ask_mode=True, call_date=when.date() if when else None,
+        )
+        return ([transcript] if len(transcript.raw_text.strip()) > 100 else []), None
+
+    # Without a fiscal year in context, use the latest completed call matching the quarter.
+    cached = [tr for tr in stored if not quarter or str(tr.quarter or "").upper().startswith(f"{quarter}-")]
+    scheduled = [
+        (label, when.date()) for label, when in calls
+        if when <= now and (not quarter or label.startswith(f"{quarter}-"))
+    ]
+    note = None
+    selected = []
+    if scheduled:
+        limit = 4 if history else 1
         try:
-            async with asyncio.timeout(7):
-                for spec in candidate_quarters(back=4):
-                    label = _quarter_label(spec.year, spec.quarter)
-                    if label in by_quarter:
-                        continue
-                    try:
-                        transcript = await fetch_transcript_into_db(
-                            session, ticker, label, earningscall_only=True, ask_mode=True
-                        )
-                    except TranscriptFetchError:
-                        continue
-                    if len(transcript.raw_text.strip()) > 100:
-                        by_quarter[label] = transcript
-                    if len(by_quarter) >= 4:
-                        break
+            async with asyncio.timeout(15):
+                for label, date in scheduled[:limit]:
+                    tr = by_quarter.get(label)
+                    if tr is None:
+                        try:
+                            tr = await fetch_transcript_into_db(
+                                session, ticker, label, earningscall_only=True, ask_mode=True, call_date=date,
+                            )
+                        except TranscriptFetchError:
+                            continue
+                    if len(tr.raw_text.strip()) > 100:
+                        selected.append(tr)
         except TimeoutError:
             pass
-    return _sort_transcripts_newest_first(list(by_quarter.values()))[:4]
+        latest_label = scheduled[0][0]
+        if not selected or selected[0].quarter != latest_label:
+            note = f"The transcript for {ticker} {latest_label} could not be retrieved."
+    else:
+        note = f"Could not verify the latest {'fiscal ' + quarter + ' ' if quarter else ''}call for {ticker} with the transcript provider."
+
+    if selected:
+        return selected, note
+    if cached:
+        return cached[:4 if history else 1], f"{note} Using the most recent matching call on file."
+    if quarter or scheduled:
+        return [], note
+    # Some issuers have a transcript even when the calendar cannot be read.
+    try:
+        async with asyncio.timeout(7):
+            tr = await fetch_transcript_into_db(session, ticker, ask_mode=True)
+    except (TimeoutError, TranscriptFetchError):
+        return [], note
+    return ([tr] if len(tr.raw_text.strip()) > 100 else []), note
 
 
 async def ensure_transcripts_for_ticker(

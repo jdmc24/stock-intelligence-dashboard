@@ -126,10 +126,12 @@ export function AskWorkspace({
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const autoRanRef = useRef(false);
+  const followUpRef = useRef<AskContext | undefined>(undefined);
 
   useEffect(() => {
     setQuestion(initialQuestion);
     autoRanRef.current = false;
+    followUpRef.current = undefined;
   }, [initialQuestion, context?.ticker, context?.regulation_id]);
 
   const runQuestion = useCallback(
@@ -146,13 +148,31 @@ export function AskWorkspace({
       const controller = new AbortController();
       abortRef.current = controller;
 
+      let turnTickers: string[] = [];
+      let turnEarnings = false;
+      const followUp = followUpRef.current;
       try {
         await streamAsk(
           trimmed,
-          context,
+          followUp ? { ...context, ...followUp } : context,
           (ev) => {
             setEvents((prev) => [...prev, ev]);
+            if (ev.type === "plan") {
+              const planIntent = ev.intent as { tickers?: string[] } | undefined;
+              const steps = ev.steps as { agent: string; status: string }[] | undefined;
+              turnTickers = planIntent?.tickers ?? [];
+              turnEarnings = steps?.some((step) => step.agent === "earnings" && step.status !== "skipped") ?? false;
+            }
             if (ev.type === "answer") {
+              const period = typeof ev.earnings_quarter === "string" && /^Q[1-4]-20\d{2}$/.test(ev.earnings_quarter)
+                ? ev.earnings_quarter
+                : undefined;
+              followUpRef.current = {
+                follow_up_tickers: turnTickers,
+                follow_up_earnings: turnEarnings,
+                follow_up_quarter: period,
+                previous_question: trimmed.slice(0, 500),
+              };
               const citations = (ev.citations as AskCitation[] | undefined) ?? [];
               const limitations = (ev.limitations as string[] | undefined) ?? [];
               const followUpQuestions = (ev.follow_up_questions as string[] | undefined) ?? [];
