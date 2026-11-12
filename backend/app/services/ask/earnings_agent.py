@@ -21,7 +21,7 @@ _TOPIC = re.compile(
 
 _CALL_SCOPE = re.compile(
     r"^(?:(?:the|its|their|this|that|a|an)\s+)?"
-    r"(?:(?:latest|last|most recent|recent|previous|next|quarterly|q[1-4]|20\d{2})[\s-]+)*"
+    r"(?:(?:latest|last|most recent|recent|previous|next|quarterly|first[ -]quarter|second[ -]quarter|third[ -]quarter|fourth[ -]quarter|q[1-4]|20\d{2})[\s-]+)*"
     r"(?:earnings(?: (?:conference )?calls?)?|conference calls?|calls?|transcripts?|results)\b",
     re.IGNORECASE,
 )
@@ -31,7 +31,9 @@ _OPERATOR_HANDOFF = re.compile(r"\bplease go ahead[.!]\s+", re.IGNORECASE)
 def _question_topic(question: str) -> str:
     for match in _TOPIC.finditer(question):
         topic = match[1].strip()
-        if not _CALL_SCOPE.match(topic) and not re.fullmatch(r"Q[1-4](?:[ -]20\d{2})?", topic, re.I):
+        if not _CALL_SCOPE.match(topic) and not re.fullmatch(
+            r"(?:Q[1-4]|(?:the )?(?:first|second|third|fourth)[ -]quarter)(?:[ -]20\d{2})?", topic, re.I
+        ):
             return topic
     return ""
 

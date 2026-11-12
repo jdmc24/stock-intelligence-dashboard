@@ -168,6 +168,8 @@ class AskRetrievalTest(unittest.IsolatedAsyncioTestCase):
             context = {"follow_up_tickers": ["NVDA"], "follow_up_earnings": True,
                        "follow_up_quarter": answer["earnings_quarter"], "previous_question": "Summarize NVIDIA's latest earnings call"}
             await self.ask("What about data center demand?", context)
+            spelled = await self.ask("What about the second quarter?", context)
+            self.assertEqual(next(event for event in spelled if event["type"] == "answer")["earnings_quarter"], "Q2-2027")
             follow_up = await self.ask("Are you sure that's the most recent earnings transcript? How about Q3?", context)
             answer = next(event for event in follow_up if event["type"] == "answer")
             self.assertIn("Q3-2027 is scheduled", answer["markdown"])

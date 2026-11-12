@@ -69,6 +69,7 @@ _EARNINGS_HINTS = (
 
 _REGULATION_HINTS = (
     "regulation",
+    "regulations",
     "regulatory",
     "federal register",
     "rule",
@@ -129,6 +130,24 @@ _EARNINGS_DRIFT_HINTS = (
     "intensified",
     "faded",
 )
+
+
+_SPELLED_QUARTERS = {"first": 1, "second": 2, "third": 3, "fourth": 4}
+
+
+def _asked_quarter(question: str) -> int | None:
+    symbol = re.search(r"\bQ([1-4])\b", question, re.I)
+    if symbol:
+        return int(symbol[1])
+    name = re.search(r"\b(first|second|third|fourth)[ -]quarter\b", question, re.I)
+    return _SPELLED_QUARTERS[name[1].lower()] if name else None
+
+
+def _has_regulatory_hint(question: str) -> bool:
+    return any(
+        re.search(rf"(?<!\w){re.escape(hint.strip())}(?!\w)", question)
+        for hint in _REGULATION_HINTS
+    )
 
 
 def parse_intent(question: str, context: dict[str, Any] | None) -> dict[str, Any]:
@@ -215,11 +234,11 @@ def should_run_regulations(question: str, intent: dict[str, Any]) -> bool:
     if intent.get("regulation_id"):
         return True
     q = (question or "").lower()
-    if any(h in q for h in _REGULATION_HINTS):
+    if _has_regulatory_hint(q):
         return True
     if "how might" in q and any(h in q for h in ("rule", "regulation", "regulatory", "compliance", "law")):
         return True
-    if intent.get("needs_earnings") and not any(h in q for h in _REGULATION_HINTS):
+    if intent.get("needs_earnings") and not _has_regulatory_hint(q):
         return False
     return True
 
@@ -301,10 +320,11 @@ async def run_ask(
         [ctx["ticker"]] if ctx.get("ticker") and not ctx.get("follow_up_tickers") else None,
     )
     lower = q.lower()
-    quarter_match = re.search(r"\bQ([1-4])\b", q, re.I)
+    requested_quarter = _asked_quarter(q)
+    regulatory = _has_regulatory_hint(lower)
     asks_for_latest = bool(re.search(r"\b(?:latest|most recent|newest|more recent|newer)\b", lower))
     if not resolved_tickers and ctx.get("follow_up_tickers") and (
-        not any(hint in lower for hint in _REGULATION_HINTS)
+        not regulatory
         or re.search(r"\b(?:it|its|they|their|this company|that company)\b", lower)
     ):
         resolved_tickers, _ = await resolve_tickers_for_question(session, "", ctx["follow_up_tickers"])
@@ -312,14 +332,14 @@ async def run_ask(
             await emit(emitter.next("message", level="info", text=f"Following up on {', '.join(resolved_tickers)}."))
             if ctx.get("previous_question"):
                 intent["previous_question"] = ctx["previous_question"]
-            if ctx.get("follow_up_earnings") and not any(hint in lower for hint in _REGULATION_HINTS):
+            if ctx.get("follow_up_earnings") and not regulatory:
                 intent["needs_earnings"] = True
                 prior_period = ctx.get("follow_up_quarter")
-                if prior_period and quarter_match:
-                    intent["follow_up_quarter"] = f"Q{quarter_match[1]}-{prior_period.split('-')[1]}"
+                if prior_period and requested_quarter:
+                    intent["follow_up_quarter"] = f"Q{requested_quarter}-{prior_period.split('-')[1]}"
                 elif prior_period and not asks_for_latest:
                     intent["follow_up_quarter"] = prior_period
-    if resolved_tickers and quarter_match:
+    if resolved_tickers and requested_quarter:
         intent["needs_earnings"] = True
     intent["force_earnings_refresh"] = asks_for_latest and bool(ctx.get("follow_up_tickers"))
     intent["tickers"] = resolved_tickers
@@ -499,10 +519,12 @@ async def _retrieve_earnings(
         return []
 
     spec = parse_quarter_label(question)
-    bare_quarter = re.search(r"\bQ([1-4])\b", question, re.I)
+    requested_quarter = _asked_quarter(question)
+    explicit_year = re.search(r"\b(?:FY\s*)?(20\d{2})\b", question, re.I)
     quarter = (
         f"Q{spec.quarter}-{spec.year}" if spec
-        else intent.get("follow_up_quarter") or (f"Q{bare_quarter[1]}" if bare_quarter else None)
+        else f"Q{requested_quarter}-{explicit_year[1]}" if requested_quarter and explicit_year
+        else intent.get("follow_up_quarter") or (f"Q{requested_quarter}" if requested_quarter else None)
     )
     history = bool(intent.get("is_earnings_drift")) or bool(
         re.search(r"\b(?:several|multiple|past|previous|few|last \d+) (?:earnings )?(?:calls|quarters)\b", question, re.I)
