@@ -132,6 +132,34 @@ _METRICS = {
 }
 
 
+def _reported_quarters(payload: dict, reports: list[_Filing]) -> dict[str, str]:
+    report_dates = {report.accession: report.reported.isoformat() for report in reports}
+    labels: dict[str, set[str]] = {}
+    for taxonomy in payload.get("facts", {}).values():
+        for concept in taxonomy.values():
+            for values in concept.get("units", {}).values():
+                for value in values:
+                    accession = value.get("accn")
+                    if accession not in report_dates or value.get("end") != report_dates[accession]:
+                        continue
+                    period, year = value.get("fp"), value.get("fy")
+                    if period == "FY":
+                        period = "Q4"
+                    if re.fullmatch(r"Q[1-4]", str(period)) and isinstance(year, int):
+                        labels.setdefault(accession, set()).add(f"{period}-{year}")
+    return {accession: next(iter(quarters)) for accession, quarters in labels.items() if len(quarters) == 1}
+
+
+def _fiscal_year_offset(reports: list[_Filing], verified: dict[str, str], fiscal_end: str) -> int | None:
+    offsets = set()
+    for report in reports:
+        actual = verified.get(report.accession)
+        estimated = _fiscal_period(report.reported, fiscal_end, annual=report.form == "10-K")
+        if actual and estimated and actual[:2] == estimated[:2]:
+            offsets.add(int(actual[3:]) - int(estimated[3:]))
+    return next(iter(offsets)) if len(offsets) == 1 else None
+
+
 def _filing_facts(payload: dict, filing: _Filing) -> tuple[str, str | None]:
     facts = payload.get("facts", {})
     concepts = {**facts.get("ifrs-full", {}), **facts.get("us-gaap", {})}
@@ -182,15 +210,35 @@ async def fetch_earnings_filing(ticker: str, requested_quarter: str | None) -> E
             (f for f in filings if f.form in {"10-Q", "10-K"}),
             key=lambda f: (f.reported, f.filed), reverse=True,
         )
+        facts = {}
+        if reports:
+            try:
+                response = await client.get(f"{_EDGAR_DATA}/api/xbrl/companyfacts/CIK{cik.zfill(10)}.json")
+                response.raise_for_status()
+                facts = response.json()
+            except (httpx.HTTPError, ValueError):
+                pass
+        verified = _reported_quarters(facts, reports)
+        quarters_by_date = {
+            filing.reported: verified[filing.accession] for filing in reversed(reports) if filing.accession in verified
+        }
+        year_offset = _fiscal_year_offset(reports, verified, fiscal_end)
+
+        def quarter_for_date(reported: dt.date) -> str | None:
+            if reported in quarters_by_date:
+                return quarters_by_date[reported]
+            estimated = _fiscal_period(reported, fiscal_end)
+            if estimated and year_offset is not None:
+                return f"{estimated[:2]}-{int(estimated[3:]) + year_offset}"
+            return None
+
         report = next((
-            f for f in reports if _matches_period(
-                _fiscal_period(f.reported, fiscal_end, annual=f.form == "10-K"), requested_quarter
-            )
+            f for f in reports if _matches_period(quarter_for_date(f.reported), requested_quarter)
         ), None)
 
         releases = [
             f for f in filings if f.form == "8-K" and "2.02" in f.items.split(",")
-            and (not report or abs((report.filed - f.filed).days) <= 10
+            and (not report or -45 <= (f.filed - report.filed).days <= 7
                  or not requested_quarter and f.filed > report.filed)
         ]
         for release in sorted(releases, key=lambda f: f.filed, reverse=True)[:2]:
@@ -202,11 +250,9 @@ async def fetch_earnings_filing(ticker: str, requested_quarter: str | None) -> E
                 exhibit_url, reported = await asyncio.to_thread(_release_exhibit, cover.text, str(cover.url))
                 if not exhibit_url:
                     continue
-                if not reported and report and abs((report.filed - release.filed).days) <= 10:
-                    reported = report.reported
                 if not reported or reported > release.filed or report and reported < report.reported:
                     continue
-                quarter = _fiscal_period(reported, fiscal_end)
+                quarter = quarter_for_date(reported)
                 if not _matches_period(quarter, requested_quarter):
                     continue
                 exhibit = await client.get(exhibit_url)
@@ -221,10 +267,8 @@ async def fetch_earnings_filing(ticker: str, requested_quarter: str | None) -> E
 
         if not report or report.form != "10-Q":
             return None
-        response = await client.get(f"{_EDGAR_DATA}/api/xbrl/companyfacts/CIK{cik.zfill(10)}.json")
-        response.raise_for_status()
-        text, verified_period = _filing_facts(response.json(), report)
-        quarter = verified_period or _fiscal_period(report.reported, fiscal_end)
+        text, verified_period = _filing_facts(facts, report)
+        quarter = verified_period or quarter_for_date(report.reported)
         if text and _matches_period(quarter, requested_quarter):
             return EarningsFiling(
                 ticker, quarter, "sec_filing", "Form 10-Q", _archive_url(cik, report), report.accession, report.reported, text
