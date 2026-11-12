@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 from typing import Any
 
 from sqlalchemy import func, select
@@ -88,26 +89,18 @@ _TICKER_STOP = frozenset(
     }
 )
 
-# Informal names with a known listing. Other names require a complete issuer-name match.
+# Names or listing preferences that cannot reliably be inferred from the SEC title.
 _COMPANY_ALIASES = {
     "alphabet": "GOOGL",
-    "amazon": "AMZN",
-    "apple": "AAPL",
-    "costco": "COST",
-    "ferrari": "RACE",
+    "facebook": "META",
     "google": "GOOGL",
     "huntington bank": "HBAN",
     "jp morgan": "JPM",
     "jpmorgan": "JPM",
     "jpmorgan chase": "JPM",
     "jpmc": "JPM",
-    "microsoft": "MSFT",
-    "nike": "NKE",
-    "nvidia": "NVDA",
     "pnc": "PNC",
     "pnc bank": "PNC",
-    "tesla": "TSLA",
-    "uber": "UBER",
 }
 _ISSUER_SUFFIX = re.compile(
     r" (?:n v|incorporated|inc|corporation|corp|company|co|limited|ltd|plc|llc|lp|ag|sa|se)$"
@@ -118,6 +111,52 @@ _MARKED_SYMBOL = re.compile(
 )
 _BARE_SYMBOL = re.compile(r"(?<![\w$])([A-Z]{2,5}(?:[.-][A-Z]{1,2})?)(?!\w)")
 _WORD = re.compile(r"[^\W_]+", re.UNICODE)
+
+COMPANY_CLARIFICATION_PREFIX = "Which company did you mean by"
+
+_NON_ISSUER_WORDS = frozenset({
+    "actual", "analyst", "analysts", "business", "commentary", "demand", "executives", "first",
+    "fiscal", "general", "growth", "guidance", "international", "leadership", "management",
+    "market", "national", "newest", "operator", "quarter", "recent", "report", "results",
+    "revenue", "second", "statement", "third", "today", "transcript", "united",
+})
+_SUBJECT_INTRO = re.compile(r"\b(?:did|does|do|has|have|is|was|will|would|can|could|should|what|how)\s*$", re.I)
+_SUBJECT_PREDICATE = re.compile(
+    r"^\s+(?:been\s+)?(?:say|said|saying|report|reported|reporting|announce|announced|discuss|discussed|mention(?:ed)|"
+    r"release|share|talk|tell|do|doing|perform|beat|miss|raise|cut|expect|forecast|see|plan|face|respond|"
+    r"grow|compare|change|provide|address|comment)\b",
+    re.I,
+)
+_NAME_INTRO = re.compile(
+    r"\b(?:tell me about|what about|how about|ask about|compare|summarize|summarise|review|analyze|analyse|recap|research|"
+    r"(?:earnings(?: (?:call|report|results|transcript))?|guidance|results|call|transcript|"
+    r"summary|highlights|insights|update) (?:of|for|from|on|about)|"
+    r"impact (?:on|for)|affect)\s*$",
+    re.I,
+)
+_NAME_TAIL = re.compile(
+    r"^(?:\s*$|\s*[?!.,;:]|\s+(?:and|vs\.?|versus|with|to|on|in|for|over|"
+    r"earnings|guidance|transcript|results|call|stock|shares|latest|last|Q[1-4])\b)",
+    re.I,
+)
+_COMPARISON = re.compile(r"\b(?:compar(?:e|ed|ing|ison)|vs\.?|versus)\b", re.I)
+_COMPARISON_LINK = re.compile(r"(?:\b(?:and|with|to|versus|vs\.?)|[,])\s*$", re.I)
+
+
+def _is_company_mention(text: str, start: int, end: int) -> bool:
+    before, after = text[:start], text[end:]
+    if re.match(r"^[’']s\b", after, re.I):
+        return True
+    if _SUBJECT_INTRO.search(before) and _SUBJECT_PREDICATE.match(after):
+        return True
+    if not _NAME_TAIL.match(after):
+        return False
+    return (
+        not before.strip()
+        or bool(_NAME_INTRO.search(before))
+        or bool(_COMPARISON.search(before) and _COMPARISON_LINK.search(before))
+    )
+
 
 LOOKUP_COMPANY_TICKER_TOOL: dict[str, Any] = {
     "name": "lookup_company_ticker",
@@ -158,17 +197,28 @@ def extract_explicit_tickers(text: str, existing: list[str] | None = None) -> li
     return list(dict.fromkeys([*symbols, *(symbol for _, symbol in sorted(matches))]))
 
 
-def _issuer_names(registry: list[SecCompanyEntry]) -> dict[str, set[str]]:
+@lru_cache(maxsize=1)
+def _issuer_names(registry: tuple[SecCompanyEntry, ...]) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
     names: dict[str, set[str]] = {}
+    prefixes: dict[str, set[str]] = {}
     for entry in registry:
         title = re.sub(r"\s+/[^/]*/", " ", entry.title)
-        full = " ".join(_WORD.findall(title.lower()))
-        short = _ISSUER_SUFFIX.sub("", full)
-        while short != full:
-            full, short = short, _ISSUER_SUFFIX.sub("", short)
-        if short and short not in GENERIC_COMPANY_WORDS and short.upper() not in _TICKER_STOP:
-            names.setdefault(short, set()).add(entry.ticker)
-    return names
+        name = " ".join(_WORD.findall(title.lower()))
+        while (short := _ISSUER_SUFFIX.sub("", name)) != name:
+            name = short
+        if not name:
+            continue
+        names.setdefault(name, set()).add(entry.ticker)
+        parts = name.split()
+        for end in range(1, min(len(parts), 5)):
+            prefix = " ".join(parts[:end])
+            if len(prefix) >= 3 and parts[end - 1] not in {"a", "and", "of", "the"}:
+                prefixes.setdefault(prefix, set()).add(entry.ticker)
+
+        initials = "".join(word[0] for word in parts if word not in {"and", "of", "the"})
+        if len(initials) >= 2 and initials.upper() == entry.ticker:
+            prefixes.setdefault(initials, set()).add(entry.ticker)
+    return names, prefixes
 
 
 def _clean_candidate(text: str) -> str:
@@ -321,7 +371,7 @@ async def resolve_tickers_for_question(
     if len(tickers) >= max_tickers:
         return tickers[:max_tickers], notes
 
-    names = _issuer_names(registry)
+    names, prefixes = _issuer_names(tuple(registry))
     words = list(_WORD.finditer(text))
     start = 0
     while start < len(words) and len(tickers) < max_tickers:
@@ -331,11 +381,17 @@ async def resolve_tickers_for_question(
             if re.search(r"[?!;,\n]", phrase):
                 break
             name = " ".join(word.group().lower() for word in words[start:end])
+            exact = names.get(name)
             alias = _COMPANY_ALIASES.get(name)
-            if alias in entries:
-                candidates.append((end, {alias}))
-            elif name in names and (end - start > 1 or phrase[0].isupper()):
-                candidates.append((end, names[name]))
+            if name in GENERIC_COMPANY_WORDS or name in _NON_ISSUER_WORDS or name.upper() in _TICKER_STOP:
+                continue
+            if not (exact and end - start > 1) and not _is_company_mention(
+                text, words[start].start(), words[end - 1].end()
+            ):
+                continue
+            matches = {alias} if alias in entries else exact or prefixes.get(name)
+            if matches:
+                candidates.append((end, matches))
         if not candidates:
             start += 1
             continue
@@ -345,7 +401,10 @@ async def resolve_tickers_for_question(
         start = end
         if len(matches) != 1:
             if not matches.intersection(tickers):
-                notes.append(f'Company name "{phrase}" is ambiguous. Include its ticker symbol.')
+                choices = ", ".join(
+                    f"{entries[ticker].title} ({ticker})" for ticker in sorted(matches)[:4]
+                )
+                notes.append(f'{COMPANY_CLARIFICATION_PREFIX} "{phrase}"? Matches include {choices}.')
             continue
         ticker = next(iter(matches))
         if ticker not in tickers:

@@ -29,6 +29,16 @@ REGISTRY = [
     SecCompanyEntry("NVDA", "NVIDIA Corporation"),
     SecCompanyEntry("UBER", "Uber Technologies, Inc."),
     SecCompanyEntry("BRK-B", "Berkshire Hathaway Inc."),
+    SecCompanyEntry("CMG", "CHIPOTLE MEXICAN GRILL INC"),
+    SecCompanyEntry("CRWD", "CrowdStrike Holdings, Inc."),
+    SecCompanyEntry("DASH", "DoorDash, Inc."),
+    SecCompanyEntry("NFLX", "NETFLIX INC"),
+    SecCompanyEntry("PLTR", "Palantir Technologies Inc."),
+    SecCompanyEntry("TGT", "TARGET CORP"),
+    SecCompanyEntry("TH", "Target Hospitality Corp."),
+    SecCompanyEntry("AMD", "ADVANCED MICRO DEVICES INC"),
+    SecCompanyEntry("FYBR", "Frontier Communications Parent, Inc."),
+    SecCompanyEntry("ULCC", "Frontier Group Holdings, Inc."),
     SecCompanyEntry("GOOG", "Alphabet Inc."),
     SecCompanyEntry("GOOGL", "Alphabet Inc."),
 ]
@@ -85,11 +95,36 @@ class AskRetrievalTest(unittest.IsolatedAsyncioTestCase):
                 ("What did $ON say on its last call?", ["ON"]),
                 ("Compare earnings for BRK.B and $MSFT.", ["BRK-B", "MSFT"]),
                 ("Compare Ferrari and Microsoft earnings.", ["RACE", "MSFT"]),
+                ("what did palantir say on its latest earnings call?", ["PLTR"]),
+                ("summarize crowdstrike’s latest earnings call", ["CRWD"]),
+                ("compare chipotle and doordash earnings", ["CMG", "DASH"]),
+                ("tell me about the latest call for netflix", ["NFLX"]),
+                ("what did amd report on its latest earnings call?", ["AMD"]),
+                ("what did target report on its earnings call?", ["TGT"]),
+                ("what did uber say about target margins on its last earnings call?", ["UBER"]),
+                ("what did management say on its last earnings call?", []),
+                ("What did ferrari say on its last earnings call?", ["RACE"]),
                 ("What did Alphabet say on its last earnings call?", ["GOOGL"]),
             ):
                 with self.subTest(question=question):
                     tickers, _ = await ticker_resolution.resolve_tickers_for_question(session, question)
                     self.assertEqual(tickers, expected)
+
+    async def test_ambiguous_common_name_asks_for_clarification(self):
+        events = await self.ask(
+            "what did frontier say on its latest earnings call?",
+            {"follow_up_tickers": ["UBER"], "follow_up_earnings": True},
+        )
+        answer = next(event for event in events if event["type"] == "answer")
+        self.assertIn("Which company did you mean", answer["markdown"])
+        self.assertIn("FYBR", answer["markdown"])
+        self.assertIn("ULCC", answer["markdown"])
+        self.assertFalse(any(event["type"] == "tool_start" for event in events))
+        choice = next(q for q in answer["follow_up_questions"] if "(ticker ULCC)" in q)
+        async with self.sessions() as session:
+            tickers, notes = await ticker_resolution.resolve_tickers_for_question(session, choice)
+        self.assertEqual(tickers, ["ULCC"])
+        self.assertEqual(notes, [])
 
     async def test_fetches_and_cites_a_transcript_before_answering(self):
         raw = "Operator: Welcome to the earnings call. CEO: Demand for electric vehicles increased. " * 6
