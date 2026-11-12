@@ -7,15 +7,55 @@ from typing import Any, Awaitable, Callable
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Transcript
-from app.services.ask.earnings_tools import _snippet, run_tool_with_events
+from app.services.ask.earnings_tools import run_tool_with_events
 
 EventCallback = Callable[[dict[str, Any]], Awaitable[None]]
 
 _TOPIC = re.compile(
     r"\b(?:about|discuss(?:ed)?|mention(?:ed)?|comment(?:s|ed)? on)\s+(.+?)"
-    r"(?=\s+(?:on|during|in|over|across|at|for|since)\b|[?.!,;]|$)",
+    r"(?=\s+(?:on|during|in|from|over|across|at|since)\s+(?:(?:the|its|their)\s+)?"
+    r"(?:latest|last|most recent|this|previous|recent|Q[1-4]|\d{4}|earnings|conference|the call)\b|[?.!,;]|$)",
     re.IGNORECASE,
 )
+
+
+_CALL_SCOPE = re.compile(
+    r"^(?:(?:the|its|their|this|that|a|an)\s+)?"
+    r"(?:(?:latest|last|most recent|recent|previous|next|quarterly|q[1-4]|20\d{2})[\s-]+)*"
+    r"(?:earnings(?: (?:conference )?calls?)?|conference calls?|calls?|transcripts?|results)\b",
+    re.IGNORECASE,
+)
+_OPERATOR_HANDOFF = re.compile(r"\bplease go ahead[.!]\s+", re.IGNORECASE)
+
+
+def _question_topic(question: str) -> str:
+    for match in _TOPIC.finditer(question):
+        topic = match[1].strip()
+        if not _CALL_SCOPE.match(topic):
+            return topic
+    return ""
+
+
+def _overview_passages(text: str, limit: int, size: int) -> list[str]:
+    handoff = _OPERATOR_HANDOFF.search(text, 0, min(len(text), 1600))
+    if handoff:
+        text = text[handoff.end():].strip()
+    if len(text) <= limit * size:
+        return [text[i:i + size] for i in range(0, len(text), size)]
+    # Sample the whole call, with more coverage near the start of prepared remarks.
+    offsets = [int((len(text) - size) * (i / max(limit - 1, 1)) ** 1.7) for i in range(limit)]
+    return [text[i:i + size].strip() for i in offsets]
+
+
+def _topic_passages(text: str, topic: str, limit: int, size: int) -> list[str]:
+    ranges: list[tuple[int, int]] = []
+    for match in re.finditer(rf"(?<!\w){re.escape(topic)}(?!\w)", text, re.IGNORECASE):
+        if ranges and match.start() < ranges[-1][1]:
+            continue
+        ranges.append((max(0, match.start() - size // 3), match.end() + 2 * size // 3))
+        if len(ranges) == limit:
+            break
+    return [text[start:end].strip() for start, end in ranges]
 
 
 async def run_earnings_agent(
@@ -40,15 +80,18 @@ async def run_earnings_agent(
         ))
 
     key_transcripts = []
+    passages_by_call = []
     quotes = []
     timeline_points = []
     gaps = list(intent.get("prefetch_notes") or [])
-    topic_match = _TOPIC.search(question)
-    topic = topic_match[1].strip() if topic_match else ""
+    topic = _question_topic(question)
     searched = {"topic": topic, "transcript_ids": [tr.id for tr in transcripts]}
     if transcripts:
         started = time.monotonic()
         await tool_start("read_earnings_transcripts", searched)
+        limit = min(7, max(1, 20 // len(transcripts)))
+        size = min(2700, 24000 // (len(transcripts) * limit))
+        topic_matches = 0
         for tr in transcripts:
             text = " ".join(tr.raw_text.split())
             key_transcripts.append({
@@ -56,26 +99,30 @@ async def run_earnings_agent(
                 "ticker": tr.ticker,
                 "quarter": tr.quarter,
                 "has_analysis": tr.status == "analyzed",
-                "transcript_excerpt": _snippet(text, ""),
             })
-            if topic:
-                matches = list(re.finditer(rf"(?<!\w){re.escape(topic)}(?!\w)", text, re.IGNORECASE))
-                passages = [text[max(0, m.start() - 350):m.end() + 450] for m in matches[:3]]
-            else:
-                size = 1200
-                offsets = [0, len(text) // 2, len(text) - size] if len(text) > size * 3 else [0]
-                passages = [text[offset:offset + size] for offset in offsets] if len(offsets) > 1 else [text[:size * 3]]
-            for passage in passages:
-                quotes.append({
-                    "transcript_id": tr.id, "ticker": tr.ticker, "quarter": tr.quarter, "excerpt": passage,
-                })
-
+            selected = _topic_passages(text, topic, limit, size) if topic else []
+            topic_matches += len(selected)
+            if not selected:
+                selected = _overview_passages(text, limit, size)
+            passages_by_call.append([
+                {"transcript_id": tr.id, "ticker": tr.ticker, "quarter": tr.quarter, "excerpt": passage}
+                for passage in selected
+            ])
+        # Interleave calls so comparisons retain evidence for each issuer and quarter.
+        quotes = [
+            passages[index]
+            for index in range(limit)
+            for passages in passages_by_call
+            if index < len(passages)
+        ]
         await tool_end(
-            "read_earnings_transcripts", searched, {"found": True, "count": len(transcripts)}, False,
-            int((time.monotonic() - started) * 1000),
+            "read_earnings_transcripts", searched,
+            {"found": bool(quotes), "count": len(quotes), "transcript_count": len(transcripts),
+             "topic_match_count": topic_matches},
+            False, int((time.monotonic() - started) * 1000),
         )
-        if topic and not quotes:
-            gaps.append(f'No exact mention of "{topic}" was found in the selected transcript text.')
+        if topic and not topic_matches:
+            gaps.append(f'No exact mention of "{topic}" was found. The research brief includes general call passages.')
 
     if intent.get("is_earnings_drift"):
         for ticker in dict.fromkeys(tr.ticker for tr in transcripts):

@@ -23,6 +23,7 @@ REGISTRY = [
     SecCompanyEntry("ESTC", "Elastic N.V."),
     SecCompanyEntry("ON", "ON SEMICONDUCTOR CORP."),
     SecCompanyEntry("RACE", "Ferrari N.V."),
+    SecCompanyEntry("LLY", "ELI LILLY & CO"),
     SecCompanyEntry("MSFT", "Microsoft Corporation"),
     SecCompanyEntry("BRK-B", "Berkshire Hathaway Inc."),
     SecCompanyEntry("GOOG", "Alphabet Inc."),
@@ -105,6 +106,30 @@ class AskRetrievalTest(unittest.IsolatedAsyncioTestCase):
             )
             self.assertIn("Demand for electric vehicles increased", answer["markdown"])
             self.assertFalse(any(event.get("agent") == "regulations" for event in run))
+
+    async def test_call_overview_reads_management_remarks(self):
+        raw = (
+            "Operator: Welcome to the earnings conference call. Later we will hold a question and answer session. "
+            "I will now turn the call over to management. Please go ahead. "
+            "CEO: We expanded manufacturing capacity and advanced our pipeline. "
+            + "CFO: Revenue increased and we raised full-year guidance. " * 400
+        )
+        async with self.sessions() as session:
+            session.add(Transcript(ticker="LLY", quarter="Q3-2026", source="earningscall",
+                                   raw_text=raw, status="raw"))
+            await session.commit()
+        events = await self.ask(
+            "tell me about the latest earnings call for eli lilly. what did the c-suite talk about?"
+        )
+        read = next(event for event in events if event.get("tool") == "read_earnings_transcripts"
+                    and event["type"] == "tool_end")
+        self.assertEqual(read["input"]["topic"], "")
+        self.assertGreater(read["output"]["count"], 1)
+        answer = next(event for event in events if event["type"] == "answer")
+        self.assertIn("We expanded manufacturing capacity", answer["markdown"])
+        self.assertIn("we raised full-year guidance", answer["markdown"])
+        self.assertNotIn("I will now turn the call over", answer["markdown"])
+        self.assertEqual(events[-1]["status"], "ok")
 
     async def test_explicit_quarter_does_not_reuse_another_call(self):
         async with self.sessions() as session:
