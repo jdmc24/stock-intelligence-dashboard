@@ -120,6 +120,11 @@ class AskRetrievalTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("FYBR", answer["markdown"])
         self.assertIn("ULCC", answer["markdown"])
         self.assertFalse(any(event["type"] == "tool_start" for event in events))
+        choice = next(q for q in answer["follow_up_questions"] if "(ticker ULCC)" in q)
+        async with self.sessions() as session:
+            tickers, notes = await ticker_resolution.resolve_tickers_for_question(session, choice)
+        self.assertEqual(tickers, ["ULCC"])
+        self.assertEqual(notes, [])
 
     async def test_fetches_and_cites_a_transcript_before_answering(self):
         raw = "Operator: Welcome to the earnings call. CEO: Demand for electric vehicles increased. " * 6

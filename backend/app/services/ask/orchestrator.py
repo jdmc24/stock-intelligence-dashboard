@@ -325,7 +325,12 @@ async def run_ask(
     )
     clarifications = [note for note in ticker_notes if note.startswith(COMPANY_CLARIFICATION_PREFIX)]
     if clarifications:
-        await emit(emitter.next("answer", markdown="\n\n".join(clarifications), citations=[], limitations=[]))
+        choices = dict.fromkeys(re.findall(r"\(([A-Z0-9.-]{1,16})\)", " ".join(clarifications)))
+        suggestions = [f"{q[:3960]} (ticker {ticker})" for ticker in list(choices)[:4]]
+        await emit(emitter.next(
+            "answer", markdown="\n\n".join(clarifications) + "\n\nChoose a match to continue.",
+            citations=[], limitations=[], follow_up_questions=suggestions,
+        ))
         await emit(emitter.next("run_end", status="partial"))
         return
     lower = q.lower()
