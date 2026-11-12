@@ -14,7 +14,8 @@ from app.auth import require_bearer_token
 from app.db import get_session
 from app.models import Base, Transcript
 from app.routers.ask import router
-from app.services.ask import orchestrator
+from app.services.ask import earnings_filings, orchestrator
+from app.services.ask.earnings_filings import EarningsFiling
 from app.services import earningscall_client, ticker_resolution, transcript_fetch_service
 from app.services.sec_ticker_registry import SecCompanyEntry
 
@@ -85,7 +86,9 @@ class AskRetrievalTest(unittest.IsolatedAsyncioTestCase):
             "LLY": (("Q3-2026", dt.datetime(2026, 11, 1, tzinfo=dt.UTC)),),
             "NVDA": (("Q3-2027", dt.datetime(2099, 11, 17, tzinfo=dt.UTC)), ("Q2-2027", dt.datetime(2026, 8, 26, tzinfo=dt.UTC)), ("Q3-2026", dt.datetime(2025, 11, 19, tzinfo=dt.UTC))),
         }.get(ticker, ()))
+        self.filing_fallback = AsyncMock(return_value=None)
         for target, name, replacement in (
+            (orchestrator, "fetch_earnings_filing", self.filing_fallback),
             (transcript_fetch_service, "earnings_call_calendar", self.calendar),
             (ticker_resolution, "load_sec_registry", AsyncMock(return_value=REGISTRY)),
             (orchestrator, "session_context", self.sessions),
@@ -158,6 +161,7 @@ class AskRetrievalTest(unittest.IsolatedAsyncioTestCase):
             provider.return_value = raw, "Ferrari N.V.", None, None, "Q3-2025"
             events = await self.ask("What did ferrari say about electric vehicles on its last earnings call?")
             provider.assert_awaited_once()
+            self.filing_fallback.assert_not_awaited()
             self.assertEqual(provider.call_args.kwargs["ticker"], "RACE")
             provider.reset_mock()
             cached = await self.ask("What did Ferrari say in its Q3 2025 earnings call?")
@@ -291,6 +295,26 @@ class AskRetrievalTest(unittest.IsolatedAsyncioTestCase):
                         await earningscall_client._provider_get(client, "/events")
         self.assertEqual(hits, ["/events"])
 
+    async def test_missing_transcript_uses_and_cites_filing(self):
+        self.filing_fallback.return_value = EarningsFiling(
+            ticker="BRK-B", quarter="Q3-2026", kind="sec_filing", label="Form 10-Q",
+            url="https://www.sec.gov/Archives/edgar/data/1067983/000119312526452412/brka-20260930.htm",
+            accession="0001193125-26-452412", period_end=dt.date(2026, 9, 30),
+            text="Net income for the quarter: 22,112,000,000 USD.",
+        )
+        with patch.object(orchestrator, "retrieve_ask_transcripts", AsyncMock(return_value=([], None))):
+            events = await self.ask("What did Berkshire Hathaway say on its latest earnings call?")
+        answer = next(event for event in events if event["type"] == "answer")
+        self.assertIn("no call transcript was available", answer["markdown"])
+        self.assertIn("22,112,000,000 USD", answer["markdown"])
+        self.assertEqual(answer["earnings_quarter"], "Q3-2026")
+        self.assertEqual(answer["citations"], [{
+            "kind": "sec_filing", "id": "0001193125-26-452412", "label": "BRK-B Q3-2026 Form 10-Q",
+            "href": self.filing_fallback.return_value.url,
+        }])
+        self.assertTrue(any(e.get("tool") == "retrieve_earnings_filings" and e.get("output", {}).get("found")
+                            for e in events))
+
     async def test_timeout_reports_gap_without_synthesizing_earnings(self):
         async def slow_provider(*args, **kwargs):
             await asyncio.Event().wait()
@@ -307,3 +331,52 @@ class AskRetrievalTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("timed out", answer["markdown"])
         self.assertEqual(answer["citations"], [])
         self.assertEqual(events[-1]["status"], "partial")
+
+
+class EarningsFilingsTest(unittest.IsolatedAsyncioTestCase):
+    async def test_release_preferred_then_matching_10q(self):
+        accession = "0001193125-26-452412"
+        submissions = {"fiscalYearEnd": "1231", "filings": {"recent": {
+            "form": ["8-K", "10-Q"],
+            "accessionNumber": ["0001193125-26-452530", accession],
+            "primaryDocument": ["cover.htm", "report.htm"],
+            "reportDate": ["2026-11-07", "2026-09-30"],
+            "filingDate": ["2026-11-09", "2026-11-09"],
+            "items": ["2.02,9.01", ""],
+        }}}
+        facts = {"facts": {"us-gaap": {"NetIncomeLoss": {"units": {"USD": [
+            {"accn": accession, "start": "2026-01-01", "end": "2026-09-30", "val": 57, "fp": "Q3", "fy": 2026},
+            {"accn": accession, "start": "2026-07-01", "end": "2026-09-30", "val": 22, "fp": "Q3", "fy": 2026},
+            {"accn": "0001193125-25-123456", "start": "2026-07-01", "end": "2026-09-30", "val": 99},
+        ]}}}}}
+        release_available = True
+
+        def handle(request):
+            path = request.url.path
+            if path.startswith("/submissions/"):
+                return httpx.Response(200, json=submissions)
+            if path.startswith("/api/xbrl/companyfacts/"):
+                return httpx.Response(200, json=facts)
+            if not release_available:
+                return httpx.Response(403)
+            if path.endswith("/cover.htm"):
+                return httpx.Response(200, text=(
+                    'Quarter ended September 30, 2026. <a href="https://example.com/exhibit.htm">Exhibit 99.1</a>'
+                    '<a href="release.htm">Exhibit 99.1</a>'
+                ))
+            if path.endswith("/release.htm"):
+                return httpx.Response(200, text="<p>Net income grew in the third quarter.</p>" * 20)
+            return httpx.Response(404)
+
+        create_client = httpx.AsyncClient
+        with patch.object(earnings_filings, "load_sec_registry", AsyncMock(return_value=REGISTRY)), \
+             patch.object(earnings_filings.httpx, "AsyncClient",
+                          side_effect=lambda **kwargs: create_client(transport=httpx.MockTransport(handle), **kwargs)):
+            release = await earnings_filings.fetch_earnings_filing("BRK-B", "Q3-2026")
+            self.assertEqual(release.kind, "earnings_release")
+            self.assertTrue(release.url.endswith("/release.htm"))
+            release_available = False
+            filing = await earnings_filings.fetch_earnings_filing("BRK-B", "Q3-2026")
+            self.assertEqual(filing.kind, "sec_filing")
+            self.assertIn("2026-07-01 through 2026-09-30): 22 USD", filing.text)
+            self.assertIsNone(await earnings_filings.fetch_earnings_filing("BRK-B", "Q4-2026"))

@@ -72,7 +72,18 @@ def verify_nvidia_follow_up() -> None:
     print(f"PASS NVIDIA refresh and typed Q3 follow-up ({latest['earnings_quarter']} → {expected})")
 
 
+def verify_berkshire_filing() -> None:
+    events = ask("What did Berkshire Hathaway report for its latest earnings call?")
+    answer = next(event for event in events if event["type"] == "answer")
+    filings = [item for item in answer["citations"] if item["kind"] in {"earnings_release", "sec_filing"}]
+    assert filings and all(item["href"].startswith("https://www.sec.gov/Archives/") for item in filings), answer["limitations"]
+    assert not any(item["kind"] == "transcript" for item in answer["citations"])
+    assert "no call transcript was available" in answer["markdown"].lower()
+    print("PASS Berkshire filing fallback", filings[0]["label"], filings[0]["href"])
+
+
 if __name__ == "__main__":
+    verify_berkshire_filing()
     verify("what did comcast say on its latest earnings call?", ["CMCSA"], require_transcript=True)
     verify("what did mcdonald’s say on its latest earnings call?", ["MCD"], require_transcript=True)
     verify("what did palantir say on its latest earnings call?", ["PLTR"], require_transcript=True)
