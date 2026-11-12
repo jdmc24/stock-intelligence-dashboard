@@ -2,28 +2,36 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import time
 import re
 from typing import Any, Awaitable, Callable
 
+from anthropic import APIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import session_context
+from app.models import Transcript
 from app.prompts.ask_prompts import CLAIM_CHECK_SYSTEM, EARNINGS_DRIFT_SYSTEM, SYNTHESIS_SYSTEM
 from app.services.ask.earnings_agent import run_earnings_agent
 from app.services.ask.events import AskEventEmitter
+from app.services.earningscall_client import parse_quarter_label
 from app.services.ask.regulations_agent import run_regulations_agent
 from app.services.company_profile_service import ensure_company_reg_profile
+from app.services.sec_ticker_registry import load_sec_registry
 from app.services.ticker_resolution import extract_explicit_tickers, resolve_tickers_for_question
 from app.services.transcript_fetch_service import (
-    ASK_EARNINGS_STORED_TARGET,
-    ask_prefetch_targets,
-    ensure_transcripts_for_ticker,
+    TranscriptFetchError,
+    retrieve_ask_transcripts,
 )
 from app.services.llm.anthropic_client import complete_json_with_usage
 from app.services.regulations_service import get_document
 from app.settings import settings
 
 EventCallback = Callable[[dict[str, Any]], Awaitable[None]]
+logger = logging.getLogger(__name__)
+_EARNINGS_RETRIEVAL_TIMEOUT = 25
+
 
 _EARNINGS_HINTS = (
     "earnings",
@@ -285,12 +293,15 @@ async def run_ask(
 
     intent = parse_intent(q, context)
 
+    await emit(emitter.next("message", level="info", text="Identifying companies in your question…"))
     resolved_tickers, ticker_notes = await resolve_tickers_for_question(
         session,
         q,
-        intent.get("tickers"),
+        [str(context["ticker"])] if context and context.get("ticker") else None,
     )
     intent["tickers"] = resolved_tickers
+    if resolved_tickers and (intent["is_earnings_drift"] or intent["is_claim_check"]):
+        intent["needs_earnings"] = True
 
     run_earnings = should_run_earnings(intent)
     run_regulations = should_run_regulations(q, intent)
@@ -342,100 +353,17 @@ async def run_ask(
 
     await emit(emitter.next("agent_start", agent="orchestrator", label="Planning"))
 
-    profile_tasks = [
-        ensure_company_reg_profile(session, str(tk), context_question=q)
-        for tk in (intent.get("tickers") or [])
-    ]
-    if profile_tasks:
-        profile_results = await asyncio.gather(*profile_tasks)
-        for (profile, created), tk in zip(profile_results, intent.get("tickers") or []):
-            if created and profile:
-                await emit(
-                    emitter.next(
-                        "message",
-                        level="info",
-                        text=(
-                            f"Auto-created regulatory profile for {profile.ticker} ({profile.name}). "
-                            "Tags are inferred — refine on the company page if needed."
-                        ),
-                    )
-                )
-
-    async def _prefetch_one(
-        tk: str,
-        min_count: int,
-        max_fetch: int,
-        *,
-        run_analysis: bool,
-    ) -> tuple[str, list, list[str]]:
-        t_up = str(tk).strip().upper()
-        async with session_context() as iso_session:
-            transcripts, fetch_notes = await ensure_transcripts_for_ticker(
-                iso_session,
-                t_up,
-                min_count=min_count,
-                max_fetch=max_fetch,
-                run_analysis=run_analysis,
-            )
-        return t_up, transcripts, fetch_notes
-
-    if run_earnings:
-        ticker_list = [str(tk) for tk in (intent.get("tickers") or [])]
-        min_count, max_fetch, run_analysis = ask_prefetch_targets(q, ticker_count=len(ticker_list))
-        prefetch_notes: list[str] = []
-        prefetched: set[str] = set()
-
-        if len(ticker_list) >= 2 and any(
-            h in q.lower() for h in ("compare", "comparison", "versus", " vs ", " vs.")
-        ):
-            await emit(
-                emitter.next(
-                    "message",
-                    level="info",
-                    text=(
-                        "Compare mode: fetching a few recent calls per ticker in parallel "
-                        "(skipping heavy analysis during prefetch for speed)."
-                    ),
-                )
-            )
-
-        if ticker_list:
-            prefetch_results = await asyncio.gather(
-                *[
-                    _prefetch_one(tk, min_count, max_fetch, run_analysis=run_analysis)
-                    for tk in ticker_list
-                ]
-            )
-            for t_up, transcripts, fetch_notes in prefetch_results:
-                if not t_up:
-                    continue
-                prefetched.add(t_up)
-                prefetch_notes.extend(fetch_notes)
-                coverage = intent.setdefault("earnings_coverage", {})
-                coverage[t_up] = {
-                    "stored": len(transcripts),
-                    "target_this_run": min_count,
-                    "stored_goal": ASK_EARNINGS_STORED_TARGET,
-                    "newest_quarter": transcripts[0].quarter if transcripts else None,
-                }
-                for note in fetch_notes:
-                    level = "warn" if note.startswith("Could not fetch") or note.startswith("No earnings") else "info"
-                    await emit(emitter.next("message", level=level, text=note))
-
-        if run_earnings and not intent.get("tickers"):
-            prefetch_notes.append(
-                "No ticker resolved from the company name — transcript prefetch was skipped. "
-                "Try including the ticker symbol (e.g. COST) or a clearer company name."
-            )
-            await emit(emitter.next("message", level="warn", text=prefetch_notes[-1]))
-        intent["prefetch_notes"] = prefetch_notes
-        intent["_prefetched_tickers"] = sorted(prefetched)
+    if run_regulations and intent["tickers"]:
+        names = {entry.ticker: entry.title for entry in await load_sec_registry()}
+        for ticker in intent["tickers"]:
+            await ensure_company_reg_profile(session, ticker, company_name=names.get(ticker))
 
     await emit(emitter.next("agent_end", agent="orchestrator", status="ok", summary="Plan ready"))
 
     in_reg = out_reg = in_ear = out_ear = 0
     reg_brief: dict[str, Any] = {
         "research_summary": "Regulations research skipped for this earnings-focused question.",
+        "skipped": True,
         "key_documents": [],
         "tickers": list(intent.get("tickers") or []),
         "topics": intent.get("topics") or [],
@@ -471,68 +399,26 @@ async def run_ask(
         )
 
     if run_earnings:
-        merged_tickers = list(intent.get("tickers") or [])
-        seen_tickers = set(str(t).upper() for t in merged_tickers)
-        for tk in reg_brief.get("tickers") or []:
-            t_up = str(tk or "").strip().upper()
-            if t_up and t_up not in seen_tickers:
-                seen_tickers.add(t_up)
-                merged_tickers.append(t_up)
-        new_for_prefetch = [
-            t
-            for t in merged_tickers
-            if t not in set(intent.get("_prefetched_tickers") or [])
-        ]
-        if new_for_prefetch:
-            min_count, max_fetch, run_analysis = ask_prefetch_targets(q, ticker_count=len(new_for_prefetch))
-            late_results = await asyncio.gather(
-                *[
-                    _prefetch_one(tk, min_count, max_fetch, run_analysis=run_analysis)
-                    for tk in new_for_prefetch
-                ]
-            )
-            for t_up, transcripts, fetch_notes in late_results:
-                intent.setdefault("prefetch_notes", []).extend(fetch_notes)
-                coverage = intent.setdefault("earnings_coverage", {})
-                coverage[t_up] = {
-                    "stored": len(transcripts),
-                    "target_this_run": min_count,
-                    "stored_goal": ASK_EARNINGS_STORED_TARGET,
-                    "newest_quarter": transcripts[0].quarter if transcripts else None,
-                }
-                for note in fetch_notes:
-                    level = "warn" if note.startswith("Could not fetch") or note.startswith("No earnings") else "info"
-                    await emit(emitter.next("message", level=level, text=note))
-                prefetched = set(intent.get("_prefetched_tickers") or [])
-                prefetched.add(t_up)
-                intent["_prefetched_tickers"] = sorted(prefetched)
-            intent["tickers"] = merged_tickers[:5]
-            for tk in new_for_prefetch:
-                await emit(
-                    emitter.next(
-                        "message",
-                        level="info",
-                        text=f"Late prefetch for {tk} after regulations agent resolved ticker.",
-                    )
-                )
-
-    if run_earnings:
-        await emit(emitter.next("agent_start", agent="earnings", label="Earnings research"))
-        earn_brief, in_ear, out_ear = await run_earnings_agent(
-            session,
-            question=q,
-            intent=intent,
-            emit=emit,
-            emitter=emitter,
+        await emit(emitter.next("agent_start", agent="earnings", label="Retrieve and read earnings calls"))
+        transcripts = await _retrieve_earnings(intent, q, emit, emitter)
+        earn_brief = await run_earnings_agent(
+            session, question=q, intent=intent, transcripts=transcripts, emit=emit, emitter=emitter,
         )
-        await emit(
-            emitter.next(
-                "agent_end",
-                agent="earnings",
-                status="ok",
-                summary=(earn_brief.get("research_summary") or "Earnings research complete.")[:240],
-            )
-        )
+        await emit(emitter.next(
+            "agent_end", agent="earnings",
+            status="partial" if earn_brief["gaps"] else "ok", summary=earn_brief["research_summary"],
+        ))
+        if not transcripts and not run_regulations:
+            final_agent = "earnings_drift" if intent.get("is_earnings_drift") else "synthesizer"
+            await emit(emitter.next("agent_start", agent=final_agent, label="Report earnings coverage"))
+            extra = {"drift_direction": "insufficient_history", "confidence": "low"} if intent.get("is_earnings_drift") else {}
+            await emit(emitter.next(
+                "answer", markdown=" ".join(earn_brief["gaps"]), citations=[],
+                limitations=earn_brief["gaps"], agents_used=["orchestrator", "earnings", final_agent], **extra,
+            ))
+            await emit(emitter.next("agent_end", agent=final_agent, status="ok"))
+            await emit(emitter.next("run_end", status="partial"))
+            return
 
     if intent.get("is_claim_check"):
         await emit(emitter.next("agent_start", agent="claim_check", label="Checking claim"))
@@ -575,6 +461,60 @@ async def run_ask(
             output_tokens=out_reg + out_ear + out_syn,
         )
     )
+
+
+async def _retrieve_earnings(
+    intent: dict[str, Any], question: str, emit: EventCallback, emitter: AskEventEmitter
+) -> list[Transcript]:
+    tickers = intent["tickers"]
+    if not tickers:
+        intent["prefetch_notes"] = ["I couldn't identify a company. Include a ticker such as $RACE and try again."]
+        await emit(emitter.next("message", level="warn", text=intent["prefetch_notes"][0]))
+        return []
+
+    spec = parse_quarter_label(question)
+    quarter = f"Q{spec.quarter}-{spec.year}" if spec else None
+    history = bool(intent.get("is_earnings_drift")) or bool(
+        re.search(r"\b(?:several|multiple|past|previous|few|last \d+) (?:earnings )?(?:calls|quarters)\b", question, re.I)
+    )
+
+    async def retrieve(ticker: str) -> tuple[list[Transcript], str | None]:
+        inputs = {"ticker": ticker, "quarter": quarter}
+        tool = "retrieve_earnings_transcripts"
+        await emit(emitter.next("tool_start", agent="earnings", tool=tool, input=inputs))
+        started = time.monotonic()
+        error = False
+        note = None
+        rows: list[Transcript] = []
+        try:
+            async with asyncio.timeout(_EARNINGS_RETRIEVAL_TIMEOUT), session_context() as isolated:
+                rows = await retrieve_ask_transcripts(isolated, ticker, quarter=quarter, history=history)
+        except TimeoutError:
+            error = True
+            note = f"Earnings transcript retrieval timed out for {ticker}. Try again."
+        except TranscriptFetchError:
+            pass
+        except Exception:
+            error = True
+            logger.exception("Ask transcript retrieval failed for %s", ticker)
+            note = f"Earnings transcript retrieval failed for {ticker}. Try again."
+        if not rows and note is None:
+            period = f" for {quarter}" if quarter else ""
+            note = f"No earnings call transcript was available for {ticker}{period}."
+        await emit(emitter.next(
+            "tool_end", agent="earnings", tool=tool, input=inputs, is_error=error,
+            duration_ms=int((time.monotonic() - started) * 1000),
+            output={"found": bool(rows), "count": len(rows), "note": note, "transcript_ids": [tr.id for tr in rows]},
+        ))
+        return rows, note
+
+    results = await asyncio.gather(*(retrieve(ticker) for ticker in tickers))
+    intent["prefetch_notes"] = [note for _, note in results if note]
+    intent["earnings_coverage"] = {
+        ticker: {"stored": len(rows), "newest_quarter": rows[0].quarter if rows else None}
+        for ticker, (rows, _) in zip(tickers, results)
+    }
+    return [row for rows, _ in results for row in rows]
 
 
 async def _synthesize(
@@ -620,9 +560,7 @@ async def _synthesize(
             user,
             8192,
         )
-    except ValueError as e:
-        if "JSON object" not in str(e):
-            raise
+    except (ValueError, APIError):
         md = _fallback_markdown(question, intent, reg_brief, earn_brief)
         citations = _citations_from_briefs(reg_brief, earn_brief)
         limitations = list(reg_brief.get("gaps") or [])
@@ -632,7 +570,7 @@ async def _synthesize(
             if note.startswith("Could not fetch") or note.startswith("No earnings") or "skipped" in note.lower():
                 limitations.append(note)
         limitations.extend(_earnings_scope_limitations(intent, earn_brief))
-        limitations.append("Answer synthesized from research briefs after JSON parse failure.")
+        limitations.append("AI synthesis was unavailable. The answer shows retrieved evidence.")
         return {
             "markdown": md,
             "citations": citations,
@@ -640,7 +578,7 @@ async def _synthesize(
             "follow_up_questions": suggest_follow_up_questions(question, intent, reg_brief, earn_brief),
         }, 0, 0
 
-    citations = (
+    citations = _citations_from_briefs(reg_brief, earn_brief) if earn_brief else (
         parsed.get("citations")
         if isinstance(parsed.get("citations"), list)
         else _citations_from_briefs(reg_brief, earn_brief)
@@ -730,7 +668,9 @@ async def _claim_check(
     confidence = str(parsed.get("confidence") or "low").strip().lower()
     if confidence not in {"low", "medium", "high"}:
         confidence = "low"
-    parsed_citations = parsed.get("citations") if isinstance(parsed.get("citations"), list) else citations
+    parsed_citations = (
+        parsed["citations"] if not earn_brief and isinstance(parsed.get("citations"), list) else citations
+    )
     limitations = parsed.get("limitations") if isinstance(parsed.get("limitations"), list) else []
     for lim in base_limitations:
         if lim not in limitations:
@@ -761,7 +701,7 @@ async def _earnings_drift(
             limitations.append(note)
     limitations.extend(_earnings_scope_limitations(intent, earn_brief))
 
-    if not settings.anthropic_api_key:
+    if not settings.anthropic_api_key or len((earn_brief or {}).get("timeline_points") or []) < 2:
         md, drift_direction, confidence = _fallback_earnings_drift_markdown(question, intent, earn_brief)
         return {
             "markdown": md,
@@ -814,7 +754,9 @@ async def _earnings_drift(
     confidence = str(parsed.get("confidence") or "low").strip().lower()
     if confidence not in {"low", "medium", "high"}:
         confidence = "low"
-    parsed_citations = parsed.get("citations") if isinstance(parsed.get("citations"), list) else citations
+    parsed_citations = (
+        parsed["citations"] if not earn_brief and isinstance(parsed.get("citations"), list) else citations
+    )
     parsed_limitations = parsed.get("limitations") if isinstance(parsed.get("limitations"), list) else []
     for lim in limitations:
         if lim not in parsed_limitations:
@@ -833,35 +775,14 @@ async def _earnings_drift(
 
 
 def _earnings_scope_limitations(intent: dict[str, Any], earn_brief: dict[str, Any] | None) -> list[str]:
-    """User-friendly scope notes when earnings coverage is thin — not dead ends."""
-    if not earn_brief and not intent.get("needs_earnings"):
+    if not earn_brief:
         return []
-    coverage = intent.get("earnings_coverage")
-    if not isinstance(coverage, dict) or not coverage:
-        return []
-
-    out: list[str] = []
-    for ticker, info in coverage.items():
-        if not isinstance(info, dict):
-            continue
-        t_up = str(ticker).strip().upper()
-        stored = int(info.get("stored") or 0)
-        goal = int(info.get("stored_goal") or ASK_EARNINGS_STORED_TARGET)
-        newest = info.get("newest_quarter")
-        if stored <= 0:
-            continue
-        q_part = f" ({newest})" if newest else ""
-        if stored == 1:
-            out.append(
-                f"This answer is based on one earnings call{q_part} for {t_up}. "
-                f"Ask can load up to {goal} recent quarters — try asking how a topic evolved over the last several calls."
-            )
-        elif stored < goal:
-            out.append(
-                f"Earnings context for {t_up} uses {stored} stored call(s) so far "
-                f"(up to {goal} can be loaded with continued Ask questions)."
-            )
-    return out
+    return [
+        f"Earnings evidence for {ticker} comes from one call"
+        f"{' (' + info['newest_quarter'] + ')' if info.get('newest_quarter') else ''}."
+        for ticker, info in intent.get("earnings_coverage", {}).items()
+        if info.get("stored") == 1
+    ]
 
 
 def _normalize_follow_up_questions(raw: Any) -> list[str]:
@@ -974,9 +895,9 @@ def _compact_brief(brief: dict[str, Any]) -> dict[str, Any]:
     if brief.get("key_documents") is not None:
         compact["key_documents"] = (brief.get("key_documents") or [])[:6]
     if brief.get("key_transcripts") is not None:
-        compact["key_transcripts"] = (brief.get("key_transcripts") or [])[:4]
+        compact["key_transcripts"] = (brief.get("key_transcripts") or [])[:20]
     if brief.get("notable_quotes") is not None:
-        compact["notable_quotes"] = (brief.get("notable_quotes") or [])[:6]
+        compact["notable_quotes"] = (brief.get("notable_quotes") or [])[:20]
     if brief.get("timeline_points") is not None:
         compact["timeline_points"] = (brief.get("timeline_points") or [])[-8:]
     if brief.get("timeline_point_count") is not None:
@@ -1007,8 +928,9 @@ def _citations_from_briefs(reg_brief: dict[str, Any], earn_brief: dict[str, Any]
     tickers = set(str(t).upper() for t in (reg_brief.get("tickers") or []))
     if earn_brief:
         tickers.update(str(t).upper() for t in (earn_brief.get("tickers") or []))
-    for tk in sorted(tickers):
-        add("company_profile", tk, tk, f"/company/{tk}")
+    if reg_brief.get("key_documents"):
+        for tk in sorted(tickers):
+            add("company_profile", tk, tk, f"/company/{tk}")
 
     if earn_brief:
         for tr in earn_brief.get("key_transcripts") or []:
@@ -1021,7 +943,8 @@ def _citations_from_briefs(reg_brief: dict[str, Any], earn_brief: dict[str, Any]
             qtr = tr.get("quarter") or "call"
             label = f"{tk} {qtr}".strip()[:120]
             add("transcript", str(tid), label, f"/transcripts/{tid}")
-            add("analysis", str(tid), f"{label} analysis", f"/analysis/{tid}")
+            if tr.get("has_analysis"):
+                add("analysis", str(tid), f"{label} analysis", f"/analysis/{tid}")
 
     return out
 
@@ -1032,26 +955,23 @@ def _fallback_markdown(
     reg_brief: dict[str, Any],
     earn_brief: dict[str, Any] | None,
 ) -> str:
-    lines = [
-        f"**Question:** {question}",
-        "",
-        "**Regulations**",
-        "",
-        reg_brief.get("research_summary") or "_No summary available._",
-        "",
-        "**Relevant documents**",
-    ]
-    docs = reg_brief.get("key_documents") or []
-    if not docs:
-        lines.append("- None found in the lookback window.")
-    else:
-        for d in docs:
-            title = d.get("title") or d.get("document_number") or "Document"
-            doc_id = d.get("id")
-            if doc_id:
-                lines.append(f"- [{title}](/regulations/{doc_id})")
-            else:
-                lines.append(f"- {title}")
+    lines = [f"**Question:** {question}"]
+    if not reg_brief.get("skipped"):
+        lines.extend([
+            "",
+            "**Regulations**",
+            "",
+            reg_brief.get("research_summary") or "_No summary available._",
+            "",
+            "**Relevant documents**",
+        ])
+        docs = reg_brief.get("key_documents") or []
+        if not docs:
+            lines.append("- None found in the lookback window.")
+        for doc in docs:
+            title = doc.get("title") or doc.get("document_number") or "Document"
+            doc_id = doc.get("id")
+            lines.append(f"- [{title}](/regulations/{doc_id})" if doc_id else f"- {title}")
 
     if earn_brief:
         lines.extend(["", "**Earnings calls**", "", earn_brief.get("research_summary") or "_No earnings summary._"])
@@ -1065,7 +985,7 @@ def _fallback_markdown(
                 qtr = tr.get("quarter") or ""
                 label = f"{tk} {qtr}".strip()
                 if tid:
-                    lines.append(f"- [{label}](/analysis/{tid})")
+                    lines.append(f"- [{label}](/transcripts/{tid})")
                 topics = tr.get("top_topics") or []
                 if topics:
                     lines.append(f"  - Topics: {', '.join(str(t) for t in topics[:5])}")
@@ -1074,14 +994,14 @@ def _fallback_markdown(
             lines.append("")
             lines.append("**Notable quotes**")
             for q in quotes[:3]:
-                speaker = q.get("speaker") or "Speaker"
+                label = " ".join(str(q[key]) for key in ("ticker", "quarter") if q.get(key))
                 excerpt = q.get("excerpt") or ""
-                lines.append(f'- {speaker}: "{excerpt}"')
+                lines.append(f'- {label or "Transcript"}: "{excerpt}"')
 
     lines.extend(
         [
             "",
-            "_Informational only — not legal or compliance advice. Set ANTHROPIC_API_KEY for full AI synthesis._",
+            "_Informational only. For full context, open the linked transcript._",
         ]
     )
     return "\n".join(lines)

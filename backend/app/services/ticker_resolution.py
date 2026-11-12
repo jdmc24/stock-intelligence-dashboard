@@ -9,7 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import CompanyRegProfile, Transcript
 from app.services.sec_ticker_registry import (
     GENERIC_COMPANY_WORDS,
-    is_sec_ticker,
+    SecCompanyEntry,
+    load_sec_registry,
     search_sec_companies,
     significant_query_tokens,
 )
@@ -29,6 +30,8 @@ _TICKER_STOP = frozenset(
         "NEW",
         "NOT",
         "SEC",
+        "SAY",
+        "LAST",
         "THE",
         "THIS",
         "THAT",
@@ -80,115 +83,35 @@ _TICKER_STOP = frozenset(
     }
 )
 
-# Common English words that must never become ticker lookups from chat text.
-_RESOLUTION_NOISE = frozenset(
-    {
-        "were",
-        "was",
-        "most",
-        "from",
-        "recent",
-        "latest",
-        "earning",
-        "earnings",
-        "highlights",
-        "highlight",
-        "call",
-        "calls",
-        "what",
-        "when",
-        "where",
-        "which",
-        "there",
-        "they",
-        "them",
-        "this",
-        "that",
-        "with",
-        "have",
-        "been",
-        "said",
-    }
+# Informal names with a known listing. Other names require a complete issuer-name match.
+_COMPANY_ALIASES = {
+    "alphabet": "GOOGL",
+    "amazon": "AMZN",
+    "apple": "AAPL",
+    "costco": "COST",
+    "ferrari": "RACE",
+    "google": "GOOGL",
+    "huntington bank": "HBAN",
+    "jp morgan": "JPM",
+    "jpmorgan": "JPM",
+    "jpmorgan chase": "JPM",
+    "jpmc": "JPM",
+    "microsoft": "MSFT",
+    "nike": "NKE",
+    "nvidia": "NVDA",
+    "pnc": "PNC",
+    "pnc bank": "PNC",
+    "tesla": "TSLA",
+}
+_ISSUER_SUFFIX = re.compile(
+    r" (?:n v|incorporated|inc|corporation|corp|company|co|limited|ltd|plc|llc|lp|ag|sa|se)$"
 )
-
-_FILLER = frozenset(
-    {
-        "compare",
-        "comparison",
-        "the",
-        "latest",
-        "earnings",
-        "call",
-        "calls",
-        "conference",
-        "transcript",
-        "for",
-        "to",
-        "and",
-        "vs",
-        "versus",
-        "how",
-        "what",
-        "about",
-        "their",
-        "recent",
-        "might",
-        "would",
-        "could",
-        "with",
-        "from",
-        "that",
-        "this",
-        "will",
-        "they",
-        "them",
-        "between",
-        "across",
-        "into",
-        "like",
-        "when",
-        "where",
-        "which",
-        "while",
-        "during",
-        "after",
-        "before",
-        "using",
-        "mention",
-        "mentioned",
-        "did",
-        "have",
-        "has",
-        "any",
-        "all",
-        "tell",
-        "using",
-        "happened",
-        "happen",
-        "happens",
-        "said",
-        "talk",
-        "talked",
-        "discuss",
-        "discussed",
-        "publicly",
-        "traded",
-        "stock",
-        "stocks",
-        "were",
-        "was",
-        "most",
-        "from",
-        "recent",
-        "highlight",
-        "highlights",
-        "earning",
-    }
+_MARKED_SYMBOL = re.compile(
+    r"(?<![\w$])(?:\$|(?i:\b(?:ticker|symbol)\s+)\$?)"
+    r"([A-Za-z]{1,5}(?:[.-][A-Za-z]{1,2})?)(?!\w)"
 )
-
-_CORPORATE_SUFFIX = (
-    r"bank|banks|bancshares|bancorp|financial|financials|finance|holdings|holding|group|corp|corporation|inc|plc|co"
-)
+_BARE_SYMBOL = re.compile(r"(?<![\w$])([A-Z]{2,5}(?:[.-][A-Z]{1,2})?)(?!\w)")
+_WORD = re.compile(r"[^\W_]+", re.UNICODE)
 
 LOOKUP_COMPANY_TICKER_TOOL: dict[str, Any] = {
     "name": "lookup_company_ticker",
@@ -216,39 +139,30 @@ LOOKUP_COMPANY_TICKER_TOOL: dict[str, Any] = {
 }
 
 
-def _add_ticker(tickers: list[str], seen: set[str], sym: str) -> None:
-    t = sym.strip().upper()
-    if not t or t in seen or t in _TICKER_STOP:
-        return
-    seen.add(t)
-    tickers.append(t)
-
-
 def extract_explicit_tickers(text: str, existing: list[str] | None = None) -> list[str]:
-    """Extract ticker-like symbols from natural-language questions."""
-    tickers: list[str] = []
-    seen: set[str] = set()
+    """Read marked symbols and unambiguous uppercase ticker tokens."""
+    symbols = [str(t).strip().upper() for t in existing or [] if str(t).strip()]
+    marked = list(_MARKED_SYMBOL.finditer(text))
+    matches = [(m.start(1), m.group(1).upper()) for m in marked]
+    for match in _BARE_SYMBOL.finditer(text):
+        symbol = match.group(1)
+        if symbol in _TICKER_STOP or any(m.start() <= match.start() < m.end() for m in marked):
+            continue
+        matches.append((match.start(), symbol))
+    return list(dict.fromkeys([*symbols, *(symbol for _, symbol in sorted(matches))]))
 
-    for sym in existing or []:
-        _add_ticker(tickers, seen, str(sym))
 
-    q = (text or "").strip()
-    if not q:
-        return tickers
-
-    for m in re.finditer(r"\b([A-Z]{2,5})\b", q):
-        _add_ticker(tickers, seen, m.group(1))
-
-    for m in re.finditer(rf"(?i)\b([A-Za-z]{{2,5}})\s+(?:{_CORPORATE_SUFFIX})\b", q):
-        _add_ticker(tickers, seen, m.group(1))
-
-    for m in re.finditer(r"(?i)\b(?:ticker|symbol|stock)\s+\$?([A-Za-z]{1,5})\b", q):
-        _add_ticker(tickers, seen, m.group(1))
-
-    for m in re.finditer(r"\$([A-Za-z]{1,5})\b", q):
-        _add_ticker(tickers, seen, m.group(1))
-
-    return tickers
+def _issuer_names(registry: list[SecCompanyEntry]) -> dict[str, set[str]]:
+    names: dict[str, set[str]] = {}
+    for entry in registry:
+        title = re.sub(r"\s+/[^/]*/", " ", entry.title)
+        full = " ".join(_WORD.findall(title.lower()))
+        short = _ISSUER_SUFFIX.sub("", full)
+        while short != full:
+            full, short = short, _ISSUER_SUFFIX.sub("", short)
+        if short and short not in GENERIC_COMPANY_WORDS and short.upper() not in _TICKER_STOP:
+            names.setdefault(short, set()).add(entry.ticker)
+    return names
 
 
 def _clean_candidate(text: str) -> str:
@@ -267,16 +181,6 @@ def _clean_candidate(text: str) -> str:
     while tokens and tokens[0].lower() in GENERIC_COMPANY_WORDS:
         tokens.pop(0)
     return " ".join(tokens).strip()
-
-
-def _candidate_priority(candidate: str) -> tuple[int, int, int]:
-    cleaned = _clean_candidate(candidate)
-    sig = significant_query_tokens(cleaned)
-    if len(sig) == 1 and 2 <= len(sig[0]) <= 5:
-        return (0, len(sig[0]), -len(cleaned))
-    if len(sig) <= 2 and len(cleaned.split()) <= 3:
-        return (1, len(cleaned), -len(cleaned))
-    return (2, len(cleaned), -len(cleaned))
 
 
 def _candidate_lookup_variants(name: str) -> list[str]:
@@ -300,66 +204,6 @@ def _candidate_lookup_variants(name: str) -> list[str]:
     for token in sig:
         add(token)
     return variants
-
-
-def extract_name_candidates(text: str) -> list[str]:
-    q = (text or "").strip()
-    if not q:
-        return []
-
-    candidates: list[str] = []
-
-    for pattern in (
-        r"\btell me about\s+(.+?)(?:[?.!]|$|\s+(?:are|is|did|do|have|has|was|were)\b)",
-        r"\babout\s+([a-zA-Z][\w'.-]*(?:\s+[a-zA-Z][\w'.-]*){0,3})",
-        r"\bfor\s+(.+?)\s+to\s+(.+?)(?:'s|\s+(?:latest|earnings|call|quarter))",
-        r"\bbetween\s+(.+?)\s+and\s+(.+?)(?:'s|\s+(?:latest|earnings|call|quarter))",
-    ):
-        match = re.search(pattern, q, re.IGNORECASE)
-        if not match:
-            continue
-        if match.lastindex and match.lastindex >= 2:
-            candidates.extend([_clean_candidate(match.group(1)), _clean_candidate(match.group(2))])
-        else:
-            candidates.append(_clean_candidate(match.group(1)))
-
-    for sep in (r"\bvs\.?\b", r"\bversus\b", r"\bcompared to\b"):
-        if re.search(sep, q, re.IGNORECASE):
-            for part in re.split(sep, q, flags=re.IGNORECASE):
-                cleaned = _clean_candidate(part)
-                if cleaned:
-                    candidates.append(cleaned)
-
-    for m in re.finditer(rf"(?i)\b([a-zA-Z][\w'.-]{{1,4}})\s+(?:{_CORPORATE_SUFFIX})\b", q):
-        candidates.append(_clean_candidate(m.group(1)))
-
-    words = [
-        w
-        for w in re.findall(r"[a-zA-Z][a-zA-Z'.-]*", q)
-        if w.lower().strip("'.") not in _FILLER and len(w.strip("'.") ) >= 2
-    ]
-    for n in range(4, 1, -1):
-        for i in range(len(words) - n + 1):
-            phrase = " ".join(words[i : i + n])
-            if len(phrase) >= 5:
-                candidates.append(_clean_candidate(phrase))
-
-    for word in words:
-        token = word.strip("'.")
-        if token.lower() in _FILLER or token.lower() in _RESOLUTION_NOISE:
-            continue
-        if 3 <= len(token) <= 5 or len(token) >= 5:
-            candidates.append(_clean_candidate(token))
-
-    seen: set[str] = set()
-    out: list[str] = []
-    for candidate in sorted(candidates, key=_candidate_priority):
-        key = candidate.lower()
-        if key in seen or len(key) < 2:
-            continue
-        seen.add(key)
-        out.append(candidate)
-    return out[:16]
 
 
 async def _search_db_companies(session: AsyncSession, query: str, *, limit: int = 3) -> list[dict[str, Any]]:
@@ -452,35 +296,6 @@ async def lookup_company_ticker(
     }
 
 
-async def _resolve_candidate(
-    session: AsyncSession,
-    name: str,
-    *,
-    limit: int = 1,
-) -> dict[str, Any] | None:
-    cleaned = _clean_candidate(name)
-    if cleaned.lower() in _RESOLUTION_NOISE:
-        return None
-    sig = significant_query_tokens(cleaned)
-    if len(sig) == 1 and sig[0] in _RESOLUTION_NOISE:
-        return None
-    for variant in _candidate_lookup_variants(name):
-        if variant.lower() in _RESOLUTION_NOISE:
-            continue
-        result = await lookup_company_ticker(session, variant, limit=limit)
-        matches = result.get("matches") or []
-        if not matches:
-            continue
-        hit = matches[0]
-        ticker = str(hit.get("ticker") or "").strip().upper()
-        score = float(hit.get("score") or 0)
-        min_score = 70.0 if len(sig) == 1 else 55.0
-        if ticker and score >= min_score:
-            hit = {**hit, "matched_variant": variant}
-            return hit
-    return None
-
-
 async def resolve_tickers_for_question(
     session: AsyncSession,
     text: str,
@@ -488,33 +303,46 @@ async def resolve_tickers_for_question(
     *,
     max_tickers: int = 5,
 ) -> tuple[list[str], list[str]]:
-    """Resolve tickers from explicit symbols and company names in the question."""
-    tickers = extract_explicit_tickers(text, existing)
+    """Resolve Ask entities without the fuzzy, interactive company-search fallback."""
+    registry = await load_sec_registry()
+    entries = {entry.ticker: entry for entry in registry}
+    tickers = [
+        ticker for ticker in dict.fromkeys(
+            t if t in entries else t.replace(".", "-") for t in extract_explicit_tickers(text, existing)
+        ) if ticker in entries
+    ]
     notes: list[str] = []
-    validated: list[str] = []
-    seen: set[str] = set()
-    for sym in tickers:
-        if not await is_sec_ticker(sym):
-            continue
-        if sym in seen:
-            continue
-        seen.add(sym)
-        validated.append(sym)
-    tickers = validated
+    if len(tickers) >= max_tickers:
+        return tickers[:max_tickers], notes
 
-    for name in extract_name_candidates(text):
-        if len(tickers) >= max_tickers:
-            break
-        hit = await _resolve_candidate(session, name, limit=1)
-        if hit is None:
+    names = _issuer_names(registry)
+    words = list(_WORD.finditer(text))
+    start = 0
+    while start < len(words) and len(tickers) < max_tickers:
+        candidates: list[tuple[int, set[str]]] = []
+        for end in range(start + 1, min(start + 8, len(words)) + 1):
+            phrase = text[words[start].start():words[end - 1].end()]
+            if re.search(r"[?!;,\n]", phrase):
+                break
+            name = " ".join(word.group().lower() for word in words[start:end])
+            alias = _COMPANY_ALIASES.get(name)
+            if alias in entries:
+                candidates.append((end, {alias}))
+            elif name in names and (end - start > 1 or phrase[0].isupper()):
+                candidates.append((end, names[name]))
+        if not candidates:
+            start += 1
             continue
-        ticker = str(hit.get("ticker") or "").strip().upper()
-        if not ticker or ticker in seen:
-            continue
-        seen.add(ticker)
-        tickers.append(ticker)
-        company_name = str(hit.get("company_name") or ticker)
-        matched = str(hit.get("matched_variant") or name)
-        notes.append(f'Resolved "{matched}" → {ticker} ({company_name[:80]}).')
 
-    return tickers[:max_tickers], notes
+        end, matches = candidates[-1]
+        phrase = text[words[start].start():words[end - 1].end()]
+        start = end
+        if len(matches) != 1:
+            if not matches.intersection(tickers):
+                notes.append(f'Company name "{phrase}" is ambiguous. Include its ticker symbol.')
+            continue
+        ticker = next(iter(matches))
+        if ticker not in tickers:
+            tickers.append(ticker)
+            notes.append(f'Resolved "{phrase}" → {ticker} ({entries[ticker].title[:80]}).')
+    return tickers, notes

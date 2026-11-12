@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import { ASK_AGENT_LABELS, ASK_TOOL_LABELS, type AskEvent } from "@/lib/ask";
+import { ASK_AGENT_LABELS, ASK_TOOL_LABELS, askToolLabel, pendingAskTools, type AskEvent } from "@/lib/ask";
 
 function formatElapsed(seconds: number): string {
   if (seconds < 60) return `${seconds}s`;
@@ -29,6 +29,9 @@ function deriveStatus(events: AskEvent[]): { label: string; step: number; total:
       break;
     }
   }
+
+  const activeTool = pendingAskTools(events).at(-1);
+  if (activeTool) return { label: askToolLabel(activeTool), step, total };
 
   const recentMessage = [...events]
     .reverse()

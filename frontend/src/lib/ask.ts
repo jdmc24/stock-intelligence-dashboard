@@ -46,16 +46,15 @@ export const ASK_TOOLS_BY_AGENT: Record<"regulations" | "earnings", readonly str
     "get_regulation",
   ],
   earnings: [
-    "lookup_company_ticker",
-    "list_transcripts_for_ticker",
-    "get_transcript_analysis",
-    "search_transcript_quotes",
-    "search_transcripts",
+    "retrieve_earnings_transcripts",
+    "read_earnings_transcripts",
     "company_earnings_timeline",
   ],
 };
 
 export const ASK_TOOL_LABELS: Record<string, string> = {
+  retrieve_earnings_transcripts: "Retrieve earnings transcripts",
+  read_earnings_transcripts: "Read transcript passages",
   lookup_company_ticker: "Resolved company name to ticker",
   lookup_company_profile: "Looked up company profile",
   search_related_regulations: "Searched related regulations",
@@ -78,6 +77,28 @@ export const ASK_AGENT_LABELS: Record<string, string> = {
   claim_check: "Claim Check Agent",
   earnings_drift: "Earnings Drift Agent",
 };
+
+export function pendingAskTools(events: AskEvent[]): AskEvent[] {
+  const pending: AskEvent[] = [];
+  for (const event of events) {
+    if (event.type === "tool_start") pending.push(event);
+    if (event.type !== "tool_end") continue;
+    const index = pending.findIndex((start) =>
+      start.agent === event.agent &&
+      start.tool === event.tool &&
+      JSON.stringify(start.input) === JSON.stringify(event.input),
+    );
+    if (index >= 0) pending.splice(index, 1);
+  }
+  return pending;
+}
+
+export function askToolLabel(event: AskEvent): string {
+  const tool = String(event.tool ?? "");
+  const label = ASK_TOOL_LABELS[tool] ?? tool;
+  const input = event.input as { ticker?: string; quarter?: string } | undefined;
+  return [label, input?.ticker, input?.quarter].filter(Boolean).join(" · ");
+}
 
 function parseSseBlock(block: string): AskEvent | null {
   const lines = block.split("\n");
@@ -147,9 +168,11 @@ export async function streamAsk(
     }
   }
 
-  if (!sawAnswer && !sawRunEnd) {
+  if (!sawRunEnd) {
     throw new Error(
-      "Ask stream ended before an answer arrived. The API connection may have timed out — try again, or check Railway logs for the backend service.",
+      sawAnswer
+        ? "The connection closed before Ask could confirm completion."
+        : "The connection closed before Ask returned an answer. Try again.",
     );
   }
 }

@@ -53,7 +53,14 @@ async def run_regulations_agent(
             )
         )
 
+    allowed_tickers = set(intent.get("tickers") or [])
+
     async def tool_dispatch(name: str, args: dict[str, Any]) -> dict[str, Any]:
+        if name == "lookup_company_ticker" or (
+            name in {"impact_by_ticker", "lookup_company_profile"}
+            and str((args or {}).get("ticker") or "").upper() not in allowed_tickers
+        ):
+            return {"error": "Only company tickers already resolved by Ask can be used here."}
         if name in ("impact_by_ticker", "search_regulations") and "lookback_days" not in (args or {}):
             args = {**(args or {}), "lookback_days": lookback_days}
         return await run_tool_with_events(session, name, args or {}, emit_tool_start, emit_tool_end)
@@ -68,11 +75,12 @@ async def run_regulations_agent(
         parsed, _tool_log, in_t, out_t = await complete_json_with_tools_and_usage(
             REGULATIONS_AGENT_SYSTEM,
             user,
-            ASK_REG_TOOLS,
+            [tool for tool in ASK_REG_TOOLS if tool["name"] != "lookup_company_ticker"],
             execute_tool_async=tool_dispatch,
             max_iters=5,
             max_tokens=4096,
         )
+        parsed["tickers"] = list(intent.get("tickers") or [])
         return parsed, in_t, out_t
     except ValueError as e:
         if "JSON object" not in str(e):
