@@ -73,6 +73,7 @@ def verify_nvidia_follow_up() -> None:
 
 
 if __name__ == "__main__":
+    verify("what did uber say on its latest earnings call?", ["UBER"], require_transcript=True)
     verify("What did MSFT say on its last earnings call?", ["MSFT"], require_transcript=True)
     verify("What did ferrari say on its last earnings call?", ["RACE"])
     verify("tell me about the latest earnings call for eli lilly. what did the c-suite talk about?",
