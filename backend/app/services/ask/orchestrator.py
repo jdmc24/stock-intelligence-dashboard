@@ -19,7 +19,11 @@ from app.services.earningscall_client import parse_quarter_label
 from app.services.ask.regulations_agent import run_regulations_agent
 from app.services.company_profile_service import ensure_company_reg_profile
 from app.services.sec_ticker_registry import load_sec_registry
-from app.services.ticker_resolution import extract_explicit_tickers, resolve_tickers_for_question
+from app.services.ticker_resolution import (
+    COMPANY_CLARIFICATION_PREFIX,
+    extract_explicit_tickers,
+    resolve_tickers_for_question,
+)
 from app.services.transcript_fetch_service import (
     TranscriptFetchError,
     retrieve_ask_transcripts,
@@ -319,6 +323,11 @@ async def run_ask(
         q,
         [ctx["ticker"]] if ctx.get("ticker") and not ctx.get("follow_up_tickers") else None,
     )
+    clarifications = [note for note in ticker_notes if note.startswith(COMPANY_CLARIFICATION_PREFIX)]
+    if clarifications:
+        await emit(emitter.next("answer", markdown="\n\n".join(clarifications), citations=[], limitations=[]))
+        await emit(emitter.next("run_end", status="partial"))
+        return
     lower = q.lower()
     requested_quarter = _asked_quarter(q)
     regulatory = _has_regulatory_hint(lower)
