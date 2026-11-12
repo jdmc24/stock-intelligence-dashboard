@@ -15,7 +15,7 @@ from app.models import Transcript
 from app.prompts.ask_prompts import CLAIM_CHECK_SYSTEM, EARNINGS_DRIFT_SYSTEM, SYNTHESIS_SYSTEM
 from app.services.ask.earnings_agent import run_earnings_agent
 from app.services.ask.events import AskEventEmitter
-from app.services.earningscall_client import parse_quarter_label
+from app.services.earningscall_client import EarningsCallBusy, parse_quarter_label
 from app.services.ask.regulations_agent import run_regulations_agent
 from app.services.company_profile_service import ensure_company_reg_profile
 from app.services.sec_ticker_registry import load_sec_registry
@@ -561,6 +561,9 @@ async def _retrieve_earnings(
         except TimeoutError:
             error = True
             note = f"Earnings transcript retrieval timed out for {ticker}. Try again."
+        except EarningsCallBusy:
+            error = True
+            note = f"The transcript provider is temporarily rate-limited for {ticker}. Try again shortly."
         except TranscriptFetchError:
             pass
         except Exception:

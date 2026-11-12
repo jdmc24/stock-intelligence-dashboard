@@ -15,7 +15,7 @@ from app.db import get_session
 from app.models import Base, Transcript
 from app.routers.ask import router
 from app.services.ask import orchestrator
-from app.services import ticker_resolution, transcript_fetch_service
+from app.services import earningscall_client, ticker_resolution, transcript_fetch_service
 from app.services.sec_ticker_registry import SecCompanyEntry
 
 
@@ -28,7 +28,8 @@ REGISTRY = [
     SecCompanyEntry("MSFT", "Microsoft Corporation"),
     SecCompanyEntry("NVDA", "NVIDIA Corporation"),
     SecCompanyEntry("UBER", "Uber Technologies, Inc."),
-    SecCompanyEntry("BRK-B", "Berkshire Hathaway Inc."),
+    SecCompanyEntry("BRK-B", "Berkshire Hathaway Inc.", "1067983"),
+    SecCompanyEntry("BRK-A", "Berkshire Hathaway Inc.", "1067983"),
     SecCompanyEntry("CMG", "CHIPOTLE MEXICAN GRILL INC"),
     SecCompanyEntry("CRWD", "CrowdStrike Holdings, Inc."),
     SecCompanyEntry("DASH", "DoorDash, Inc."),
@@ -39,6 +40,21 @@ REGISTRY = [
     SecCompanyEntry("AMD", "ADVANCED MICRO DEVICES INC"),
     SecCompanyEntry("FYBR", "Frontier Communications Parent, Inc."),
     SecCompanyEntry("ULCC", "Frontier Group Holdings, Inc."),
+    SecCompanyEntry("BAC", "BANK OF AMERICA CORP /DE/", "70858"),
+    SecCompanyEntry("BAC-PB", "BANK OF AMERICA CORP /DE/", "70858"),
+    SecCompanyEntry("CMCSA", "COMCAST CORP", "1166691"),
+    SecCompanyEntry("CCZ", "COMCAST CORP", "1166691"),
+    SecCompanyEntry("F", "FORD MOTOR CO", "37996"),
+    SecCompanyEntry("F-PD", "FORD MOTOR CO", "37996"),
+    SecCompanyEntry("GS", "GOLDMAN SACHS GROUP INC", "886982"),
+    SecCompanyEntry("GS-PA", "GOLDMAN SACHS GROUP INC", "886982"),
+    SecCompanyEntry("AAAU", "Goldman Sachs Physical Gold ETF", "1708646"),
+    SecCompanyEntry("GSBD", "Goldman Sachs BDC, Inc.", "1572694"),
+    SecCompanyEntry("DIS", "Walt Disney Co"),
+    SecCompanyEntry("BKNG", "Booking Holdings Inc."),
+    SecCompanyEntry("PEP", "PEPSICO INC"),
+    SecCompanyEntry("LOW", "LOWES COMPANIES INC"),
+    SecCompanyEntry("MCD", "MCDONALDS CORP"),
     SecCompanyEntry("GOOG", "Alphabet Inc."),
     SecCompanyEntry("GOOGL", "Alphabet Inc."),
 ]
@@ -104,6 +120,16 @@ class AskRetrievalTest(unittest.IsolatedAsyncioTestCase):
                 ("what did uber say about target margins on its last earnings call?", ["UBER"]),
                 ("what did management say on its last earnings call?", []),
                 ("What did ferrari say on its last earnings call?", ["RACE"]),
+                ("what did bank of america say on its latest earnings call?", ["BAC"]),
+                ("what did comcast say on its latest earnings call?", ["CMCSA"]),
+                ("what did ford say on its latest earnings call?", ["F"]),
+                ("what did berkshire hathaway say on its latest earnings call?", ["BRK-B"]),
+                ("what did goldman sachs say on its latest earnings call?", ["GS"]),
+                ("what did disney say on its latest earnings call?", ["DIS"]),
+                ("what did booking.com say on its latest earnings call?", ["BKNG"]),
+                ("what did pepsi say on its latest earnings call?", ["PEP"]),
+                ("what did lowe’s say on its latest earnings call?", ["LOW"]),
+                ("what did mcdonald’s say on its latest earnings call?", ["MCD"]),
                 ("What did Alphabet say on its last earnings call?", ["GOOGL"]),
             ):
                 with self.subTest(question=question):
@@ -239,6 +265,31 @@ class AskRetrievalTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(answer["earnings_quarter"], "Q4-2026")
         self.assertTrue(any("Q2-2027" in limit and "on file" in limit for limit in answer["limitations"]))
         self.assertEqual(events[-1]["status"], "partial")
+
+    async def test_provider_rate_limit_keeps_cached_evidence(self):
+        async with self.sessions() as session:
+            session.add(Transcript(ticker="NVDA", quarter="Q2-2027", source="earningscall",
+                                   raw_text="CEO: Prior call remarks. " * 8, status="raw"))
+            await session.commit()
+        self.calendar.side_effect = earningscall_client.EarningsCallBusy("Rate-limited")
+        events = await self.ask("What did NVIDIA say on its latest earnings call?")
+        answer = next(event for event in events if event["type"] == "answer")
+        self.assertEqual(answer["earnings_quarter"], "Q2-2027")
+        self.assertTrue(any("rate-limited" in item and "on file" in item for item in answer["limitations"]))
+
+    async def test_provider_honors_retry_after_without_sending_another_request(self):
+        hits = []
+
+        def handle(request):
+            hits.append(request.url.path)
+            return httpx.Response(429, headers={"Retry-After": "10"})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle), base_url="https://test") as client:
+            with patch.object(earningscall_client, "_retry_after", 0):
+                for _ in range(2):
+                    with self.assertRaises(earningscall_client.EarningsCallBusy):
+                        await earningscall_client._provider_get(client, "/events")
+        self.assertEqual(hits, ["/events"])
 
     async def test_timeout_reports_gap_without_synthesizing_earnings(self):
         async def slow_provider(*args, **kwargs):

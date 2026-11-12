@@ -25,10 +25,6 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    if settings.earningcall_api_key:
-        import earningscall
-
-        earningscall.api_key = settings.earningcall_api_key
     await init_platform_schema()
     await init_company_profiles()
 
